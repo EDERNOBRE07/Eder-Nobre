@@ -33,3 +33,17 @@ export interface Region {
   color: string;
   icon: string;
 }
+
+export interface ImportSessionItem {
+  id: string;
+  name: string;
+  type: "file" | "paste" | "drive";
+  status: "pending" | "success" | "failed";
+  error?: string;
+  recordsCount?: number;
+  fileObject?: File;
+  pastedText?: string;
+  driveFileId?: string;
+  driveMimeType?: string;
+}
+

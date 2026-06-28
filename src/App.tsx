@@ -10,7 +10,7 @@ import {
   GoogleAuthProvider
 } from "firebase/auth";
 import { auth, googleAuthProvider } from "./lib/firebase.ts";
-import { Record as DBRecord, ExecutionLog, Sector, Region } from "./types.ts";
+import { Record as DBRecord, ExecutionLog, Sector, Region, ImportSessionItem } from "./types.ts";
 import { SECTORS, getSectorById } from "./utils/sectors.ts";
 import { REGIONS, getRegionIdForCity } from "./utils/regionMapper.ts";
 import { motion, AnimatePresence } from "motion/react";
@@ -39,7 +39,12 @@ import {
   FileMinus,
   HelpCircle,
   Cloud,
-  Folder
+  Folder,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  RotateCw,
+  Info
 } from "lucide-react";
 
 // Third-party file parsers (installed)
@@ -66,6 +71,7 @@ export default function App() {
   // Navigation and Filter State
   const [activeTab, setActiveTab] = useState<string>("dashboard"); // "dashboard", "logs", or sector ID
   const [globalSearch, setGlobalSearch] = useState("");
+  const [searchGroupBy, setSearchGroupBy] = useState<"none" | "cidade" | "sector">("none");
   const [statusFilter, setStatusFilter] = useState("");
   const [cityFilter, setCityFilter] = useState("");
   const [dateFromFilter, setDateFromFilter] = useState("");
@@ -80,6 +86,7 @@ export default function App() {
   // File Staging and Batch Preview State
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [stagedRecords, setStagedRecords] = useState<DBRecord[]>([]);
+  const [importSessionItems, setImportSessionItems] = useState<ImportSessionItem[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSource, setImportSource] = useState("");
   const [pastedText, setPastedText] = useState("");
@@ -92,52 +99,6 @@ export default function App() {
   const [driveSearch, setDriveSearch] = useState("");
   const [isFetchingDrive, setIsFetchingDrive] = useState(false);
 
-  // Email / Password Auth Modal States
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
-  const [authModalError, setAuthModalError] = useState("");
-  const [anonymousAuthFailed, setAnonymousAuthFailed] = useState(false);
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthModalError("");
-    if (!authEmail || !authPassword) {
-      setAuthModalError("Por favor, preencha todos os campos.");
-      return;
-    }
-    try {
-      setAuthLoading(true);
-      if (authMode === "login") {
-        await signInWithEmailAndPassword(auth, authEmail, authPassword);
-        showToast("Login realizado com sucesso!", "success");
-      } else {
-        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
-        showToast("Conta criada e conectada com sucesso!", "success");
-      }
-      setIsAuthModalOpen(false);
-      setAuthEmail("");
-      setAuthPassword("");
-    } catch (err: any) {
-      console.error("Email auth error:", err);
-      let friendlyMessage = err.message;
-      if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password" || err.code === "auth/user-not-found") {
-        friendlyMessage = "E-mail ou senha incorretos.";
-      } else if (err.code === "auth/email-already-in-use") {
-        friendlyMessage = "Este e-mail já está em uso.";
-      } else if (err.code === "auth/weak-password") {
-        friendlyMessage = "A senha deve ter pelo menos 6 caracteres.";
-      } else if (err.code === "auth/invalid-email") {
-        friendlyMessage = "Formato de e-mail inválido.";
-      }
-      setAuthModalError(friendlyMessage);
-      showToast("Falha na autenticação: " + friendlyMessage, "error");
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
   // -------------------------------------------------------------
   // AUTHENTICATION FLOW
   // -------------------------------------------------------------
@@ -145,7 +106,6 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
-        setAnonymousAuthFailed(false);
         const jwt = await currentUser.getIdToken();
         setToken(jwt);
         showToast("Conexão segura restabelecida!", "success");
@@ -156,10 +116,8 @@ export default function App() {
         try {
           setAuthLoading(true);
           await signInAnonymously(auth);
-          setAnonymousAuthFailed(false);
         } catch (err: any) {
           console.error("Anonymous authentication failed:", err);
-          setAnonymousAuthFailed(true);
           showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
         }
       }
@@ -242,30 +200,18 @@ export default function App() {
     const confirmed = window.confirm(`Deseja mesmo baixar e processar o arquivo "${fileName}" do seu Google Drive?`);
     if (!confirmed) return;
     
-    setImportLoading(true);
-    setImportSource(`Google Drive: ${fileName}`);
+    const itemId = "drive-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+    const newItem: ImportSessionItem = {
+      id: itemId,
+      name: `Google Drive: ${fileName}`,
+      type: "drive",
+      status: "pending",
+      driveFileId: fileId,
+      driveMimeType: mimeType
+    };
     
-    try {
-      const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${driveToken}`
-        }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Não foi possível baixar o arquivo. Status: ${response.status}`);
-      }
-      
-      const blob = await response.blob();
-      const file = new File([blob], fileName, { type: mimeType });
-      await processFileForClassification(file);
-      showToast(`Arquivo "${fileName}" carregado e enviado para análise com sucesso!`, "success");
-    } catch (err: any) {
-      console.error("Error importing file from Google Drive:", err);
-      showToast(`Falha ao importar do Google Drive: ${err.message}`, "error");
-      setImportLoading(false);
-    }
+    setImportSessionItems((prev) => [newItem, ...prev]);
+    await runItemClassification(newItem);
   };
 
   useEffect(() => {
@@ -396,86 +342,96 @@ export default function App() {
     });
   };
 
-  const processFileForClassification = async (file: File) => {
-    const ext = file.name.split(".").pop()?.toLowerCase();
+  const runItemClassification = async (item: ImportSessionItem) => {
+    // Set item status to pending
+    setImportSessionItems((prev) =>
+      prev.map((i) => (i.id === item.id ? { ...i, status: "pending", error: undefined } : i))
+    );
     setImportLoading(true);
-    setImportSource(file.name);
+    setImportSource(item.name);
+
     try {
       let extractedText = "";
+      let fileBase64 = "";
+      let mimeType = "";
 
-      if (ext === "csv" || ext === "txt") {
-        extractedText = await file.text();
+      if (item.type === "paste") {
+        extractedText = item.pastedText || "";
         if (!extractedText.trim()) {
-          throw new Error("Não foi possível extrair nenhum texto legível deste documento.");
+          throw new Error("Não há texto para analisar.");
         }
-        await sendTextToGemini(extractedText, file.name);
-      } else if (ext === "xlsx" || ext === "xls") {
-        const arrayBuffer = await file.arrayBuffer();
-        const workbook = XLSX.read(arrayBuffer, { type: "array" });
-        let sheetsText = "";
-        workbook.SheetNames.forEach((sheetName) => {
-          const sheet = workbook.Sheets[sheetName];
-          sheetsText += `--- Planilha: ${sheetName} ---\n`;
-          sheetsText += XLSX.utils.sheet_to_csv(sheet) + "\n";
-        });
-        extractedText = sheetsText;
-        if (!extractedText.trim()) {
-          throw new Error("Não foi possível extrair nenhum texto legível deste documento.");
-        }
-        await sendTextToGemini(extractedText, file.name);
-      } else if (ext === "docx") {
-        const arrayBuffer = await file.arrayBuffer();
-        const parseResult = await mammoth.extractRawText({ arrayBuffer });
-        extractedText = parseResult.value;
-        if (!extractedText.trim()) {
-          throw new Error("Não foi possível extrair nenhum texto legível deste documento.");
-        }
-        await sendTextToGemini(extractedText, file.name);
-      } else if (ext === "pdf") {
-        const base64Data = await fileToBase64(file);
-        // Send the PDF directly as a base64 document to Gemini for native document parsing
-        await sendTextToGemini("", file.name, base64Data, "application/pdf");
       } else {
-        throw new Error(`O formato de arquivo .${ext} não é suportado.`);
+        let file = item.fileObject;
+        
+        // If it's a drive file and we don't have the fileObject yet, download it first!
+        if (item.type === "drive" && !file && item.driveFileId) {
+          const url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}?alt=media`;
+          const response = await fetch(url, {
+            headers: {
+              Authorization: `Bearer ${driveToken}`
+            }
+          });
+          
+          if (!response.ok) {
+            throw new Error(`Não foi possível baixar do Drive. Status: ${response.status}`);
+          }
+          
+          const blob = await response.blob();
+          file = new File([blob], item.name.replace("Google Drive: ", ""), { type: item.driveMimeType || "application/octet-stream" });
+          item.fileObject = file; // Cache fileObject
+        }
+
+        if (!file) {
+          throw new Error("Arquivo de dados não disponível para processamento.");
+        }
+
+        const ext = file.name.split(".").pop()?.toLowerCase();
+        
+        if (ext === "csv" || ext === "txt") {
+          extractedText = await file.text();
+        } else if (ext === "xlsx" || ext === "xls") {
+          const arrayBuffer = await file.arrayBuffer();
+          const workbook = XLSX.read(arrayBuffer, { type: "array" });
+          let sheetsText = "";
+          workbook.SheetNames.forEach((sheetName) => {
+            const sheet = workbook.Sheets[sheetName];
+            sheetsText += `--- Planilha: ${sheetName} ---\n`;
+            sheetsText += XLSX.utils.sheet_to_csv(sheet) + "\n";
+          });
+          extractedText = sheetsText;
+        } else if (ext === "docx") {
+          const arrayBuffer = await file.arrayBuffer();
+          const parseResult = await mammoth.extractRawText({ arrayBuffer });
+          extractedText = parseResult.value;
+        } else if (ext === "pdf") {
+          fileBase64 = await fileToBase64(file);
+          mimeType = "application/pdf";
+        } else {
+          throw new Error(`O formato de arquivo .${ext} não é suportado.`);
+        }
+
+        if (ext !== "pdf" && !extractedText.trim()) {
+          throw new Error("Não foi possível extrair nenhum texto legível deste documento.");
+        }
       }
 
-    } catch (err: any) {
-      console.error("File processing failed:", err);
-      showToast("Falha no processamento: " + err.message, "error");
-      setImportLoading(false);
-    }
-  };
+      // Query server-side proxy
+      if (!token) {
+        throw new Error("Sessão expirada. Autentique-se novamente.");
+      }
 
-  const handlePasteClassification = async () => {
-    if (!pastedText.trim()) {
-      showToast("Por favor, cole um texto para analisar.", "error");
-      return;
-    }
-    setImportLoading(true);
-    setImportSource("Texto Colado Manualmente");
-    try {
-      await sendTextToGemini(pastedText, "Texto Colado");
-      setPastedText("");
-      setIsPasteAreaOpen(false);
-    } catch (err: any) {
-      showToast("Falha ao analisar texto: " + err.message, "error");
-      setImportLoading(false);
-    }
-  };
-
-  const sendTextToGemini = async (textPayload: string, filename: string, fileBase64?: string, mimeType?: string) => {
-    if (!token) {
-      showToast("Não autenticado.", "error");
-      return;
-    }
-    try {
       const response = await fetch("/api/records/classify", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ text: textPayload, filename, fileBase64, mimeType })
+        body: JSON.stringify({ 
+          text: extractedText, 
+          filename: item.name, 
+          fileBase64: fileBase64 || undefined, 
+          mimeType: mimeType || undefined 
+        })
       });
 
       if (!response.ok) {
@@ -485,17 +441,90 @@ export default function App() {
 
       const resData = await response.json();
       if (resData.records && Array.isArray(resData.records)) {
-        setStagedRecords(resData.records);
-        showToast(`Gemini processou e extraiu ${resData.records.length} registros!`, "success");
+        // Tag records with the importItemId so we can remove or re-import cleanly
+        setStagedRecords((prev) => {
+          const cleanPrev = prev.filter((r) => (r as any).importItemId !== item.id);
+          const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
+          return [...cleanPrev, ...taggedNew];
+        });
+
+        // Update item status
+        setImportSessionItems((prev) =>
+          prev.map((i) =>
+            i.id === item.id
+              ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+              : i
+          )
+        );
+        showToast(`"${item.name}" processado com sucesso! ${resData.records.length} ações encontradas.`, "success");
       } else {
         throw new Error("Nenhum registro pôde ser estruturado pela inteligência artificial.");
       }
+
     } catch (err: any) {
-      console.error("Gemini proxy query failed:", err);
-      showToast(err.message, "error");
+      console.error(`Classification error for item "${item.name}":`, err);
+      const errMsg = err.message || "Erro desconhecido";
+      
+      // Update item status to failed
+      setImportSessionItems((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? { ...i, status: "failed", error: errMsg, fileObject: item.fileObject }
+            : i
+        )
+      );
+      showToast(`Falha em "${item.name}": ${errMsg}`, "error");
     } finally {
-      setImportLoading(false);
+      // Defer general loader stop if other elements are still pending
+      setImportSessionItems((prev) => {
+        const hasPending = prev.some((i) => i.id !== item.id && i.status === "pending");
+        if (!hasPending) {
+          setImportLoading(false);
+        }
+        return prev;
+      });
     }
+  };
+
+  const handleRetryItem = async (itemId: string) => {
+    const item = importSessionItems.find((i) => i.id === itemId);
+    if (!item) return;
+    await runItemClassification(item);
+  };
+
+  const processFileForClassification = async (file: File) => {
+    const itemId = "file-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+    const newItem: ImportSessionItem = {
+      id: itemId,
+      name: file.name,
+      type: "file",
+      status: "pending",
+      fileObject: file
+    };
+    
+    setImportSessionItems((prev) => [newItem, ...prev]);
+    await runItemClassification(newItem);
+  };
+
+  const handlePasteClassification = async () => {
+    if (!pastedText.trim()) {
+      showToast("Por favor, cole um texto para analisar.", "error");
+      return;
+    }
+    const itemId = "paste-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+    const snippet = pastedText.substring(0, 30) + (pastedText.length > 30 ? "..." : "");
+    const newItem: ImportSessionItem = {
+      id: itemId,
+      name: `Texto Colado (${snippet})`,
+      type: "paste",
+      status: "pending",
+      pastedText: pastedText
+    };
+    
+    setPastedText("");
+    setIsPasteAreaOpen(false);
+    setImportSessionItems((prev) => [newItem, ...prev]);
+    await runItemClassification(newItem);
   };
 
   // -------------------------------------------------------------
@@ -671,6 +700,7 @@ export default function App() {
     const combined = [...records, ...stagedRecords];
     setRecords(combined);
     setStagedRecords([]);
+    setImportSessionItems([]);
     setIsImportPanelOpen(false);
     await syncWithDatabase(combined);
   };
@@ -678,6 +708,7 @@ export default function App() {
   // Clear staged preview
   const handleDiscardStaged = () => {
     setStagedRecords([]);
+    setImportSessionItems([]);
     showToast("Registros provisórios descartados.", "info");
   };
 
@@ -709,6 +740,25 @@ export default function App() {
       return `${parts[2]}/${parts[1]}/${parts[0]}`;
     }
     return dt;
+  };
+
+  const highlightText = (text: string, search: string) => {
+    if (!search.trim()) return <span>{text}</span>;
+    const regex = new RegExp(`(${search.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")})`, "gi");
+    const parts = text.split(regex);
+    return (
+      <span>
+        {parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} className="bg-yellow-100 text-slate-950 font-bold px-0.5 rounded">
+              {part}
+            </mark>
+          ) : (
+            part
+          )
+        )}
+      </span>
+    );
   };
 
   // -------------------------------------------------------------
@@ -884,23 +934,19 @@ export default function App() {
             {user && user.isAnonymous ? (
               <div className="flex flex-col gap-1.5 w-full">
                 <button 
-                  onClick={() => { setAuthMode("login"); setAuthModalError(""); setIsAuthModalOpen(true); }}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-1.5 px-2.5 rounded transition-all text-[11px] text-center shadow-sm"
-                >
-                  Entrar / Criar Conta (E-mail)
-                </button>
-                <button 
                   onClick={handleGoogleLogin} 
-                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium py-1 px-2.5 rounded transition-all text-[10px] text-center"
-                  title="O login via Google pode ser bloqueado no iframe. Use login com e-mail acima."
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-sans font-bold py-1.5 px-2.5 rounded transition-all text-xs text-center flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
                 >
-                  Entrar com Google
+                  <svg className="w-3.5 h-3.5 fill-current shrink-0 text-white" viewBox="0 0 24 24">
+                    <path d="M12.24 10.285V14.4h6.887c-.648 2.41-2.519 4.114-5.136 4.114-3.41 0-6.186-2.775-6.186-6.186s2.776-6.186 6.186-6.186c1.602 0 3.011.613 4.1 1.637l3.073-3.073C19.29 2.16 16.003 1 12.24 1 6.033 1 1 6.033 1 12.24s5.033 11.24 11.24 11.24c6.48 0 11.24-4.543 11.24-11.24 0-.763-.095-1.445-.259-1.955H12.24z"/>
+                  </svg>
+                  <span>Entrar com Google</span>
                 </button>
               </div>
             ) : (
               <button 
                 onClick={handleLogout} 
-                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded transition-colors text-[11px] flex items-center justify-center gap-1"
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded transition-colors text-[11px] flex items-center justify-center gap-1 cursor-pointer"
               >
                 <LogOut size={11} /> Sair da Conta
               </button>
@@ -1032,34 +1078,6 @@ export default function App() {
         {/* Scrollable Container */}
         <main className="flex-1 overflow-y-auto p-6 md:p-8 space-y-8 scrollbar-thin">
           
-          {anonymousAuthFailed && (!user || user.isAnonymous) && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 flex items-start gap-3.5 shadow-sm text-amber-900 leading-normal font-sans text-xs">
-              <span className="text-xl">⚠️</span>
-              <div className="space-y-1">
-                <p className="font-bold text-amber-950">Aviso do Sistema de Autenticação</p>
-                <p>
-                  A sessão anônima automática foi desativada no painel administrativo do seu projeto Firebase. 
-                  Para conseguir cadastrar, editar ou classificar registros parlamentares usando inteligência artificial, você precisa se conectar com uma conta de usuário.
-                </p>
-                <div className="pt-2 flex items-center gap-2.5">
-                  <button 
-                    onClick={() => { setAuthMode("login"); setAuthModalError(""); setIsAuthModalOpen(true); }}
-                    className="bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-3 rounded-lg transition-colors text-xs shadow-sm"
-                  >
-                    Entrar / Criar Conta (E-mail e Senha)
-                  </button>
-                  <span className="text-amber-500 font-medium">ou</span>
-                  <button 
-                    onClick={handleGoogleLogin}
-                    className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold py-1.5 px-3 rounded-lg transition-colors text-xs shadow-sm"
-                  >
-                    Entrar com Google
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* ==========================================
               IMPORT PANEL (AI BATCH CLASSIFICATION)
              ========================================== */}
@@ -1079,7 +1097,7 @@ export default function App() {
                   </p>
                 </div>
                 <button 
-                  onClick={() => { setIsImportPanelOpen(false); setStagedRecords([]); }}
+                  onClick={() => { setIsImportPanelOpen(false); setStagedRecords([]); setImportSessionItems([]); }}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
                 >
                   <X size={18} />
@@ -1234,8 +1252,121 @@ export default function App() {
 
               </div>
 
-              {/* Loader during Gemini execution */}
-              {importLoading && (
+              {/* State-tracked Session Items Queue */}
+              {importSessionItems.length > 0 && (
+                <div className="p-5 bg-slate-950/40 rounded-xl border border-slate-800 space-y-4 animate-fadeIn">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2 border-b border-slate-800/60">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                      <span>📊 Fila de Processamento da Sessão ({importSessionItems.length} {importSessionItems.length === 1 ? "item" : "itens"})</span>
+                    </h4>
+                    {importSessionItems.some(i => i.status === "failed") && (
+                      <span className="text-[10px] bg-red-500/10 text-red-400 font-semibold px-2.5 py-1 rounded border border-red-500/20 flex items-center gap-1.5 animate-pulse">
+                        <AlertTriangle size={12} /> Atenção: Itens com falha detectados
+                      </span>
+                    )}
+                  </div>
+                  
+                  <div className="divide-y divide-slate-800/50 max-h-80 overflow-y-auto scrollbar-thin pr-1 space-y-1">
+                    {importSessionItems.map((item) => {
+                      const isPending = item.status === "pending";
+                      const isSuccess = item.status === "success";
+                      const isFailed = item.status === "failed";
+                      
+                      return (
+                        <div key={item.id} className="pt-2 pb-1 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs group">
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                            {/* Icon based on status or type */}
+                            <div className="mt-1 shrink-0">
+                              {isPending && <Loader2 size={16} className="animate-spin text-blue-400" />}
+                              {isSuccess && <CheckCircle2 size={16} className="text-emerald-500" />}
+                              {isFailed && <AlertTriangle size={16} className="text-red-500" />}
+                            </div>
+                            
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-slate-200 truncate" title={item.name}>{item.name}</p>
+                              {isPending && (
+                                <p className="text-[10px] text-blue-400 flex items-center gap-1 mt-0.5 animate-pulse">
+                                  <span>Extraindo conteúdo e estruturando dados com Gemini 3.5...</span>
+                                </p>
+                              )}
+                              {isSuccess && (
+                                <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1 font-semibold">
+                                  <span>✓ Processado com sucesso • <strong>{item.recordsCount}</strong> ações parlamentares extraídas</span>
+                                </p>
+                              )}
+                              {isFailed && (() => {
+                                const isQuotaError = item.error?.toLowerCase().includes("quota") || 
+                                                     item.error?.toLowerCase().includes("limit") || 
+                                                     item.error?.toLowerCase().includes("exceeded") || 
+                                                     item.error?.includes("429") ||
+                                                     item.error?.includes("RESOURCE_EXHAUSTED");
+                                return (
+                                  <div className="mt-1.5 space-y-1">
+                                    <p className="text-[10px] text-red-400 font-bold flex items-center gap-1">
+                                      <span>{isQuotaError ? "⚠️ Limite de Cota Excedido (API Gratuita)" : "Erro no processamento do arquivo"}</span>
+                                    </p>
+                                    
+                                    {isQuotaError ? (
+                                      <div className="text-[10.5px] text-slate-300 bg-amber-950/20 border border-amber-900/40 rounded-xl p-3 leading-relaxed max-w-2xl shadow-sm space-y-2">
+                                        <p className="text-slate-200">
+                                          O arquivo ou texto enviado ultrapassou o limite de tokens por minuto da chave de API gratuita do Gemini (250 mil tokens/minuto ou limite de requisições).
+                                        </p>
+                                        <div className="block text-[10px] text-slate-300 pt-2 border-t border-amber-900/20">
+                                          <span className="font-bold text-white">Como resolver:</span>
+                                          <ul className="list-disc pl-4 mt-1 space-y-1 text-slate-400">
+                                            <li><strong>Reduza o texto:</strong> Divida o documento em partes menores e envie cada parte individualmente.</li>
+                                            <li><strong>Aguarde 1 minuto:</strong> O limite de cota é renovado a cada minuto. Aguarde um instante e clique no botão de reprocessar ao lado.</li>
+                                            <li><strong>Configurar chave própria:</strong> Se tiver uma chave de API própria (paga), você pode configurá-la nas configurações do projeto para ter cotas ilimitadas.</li>
+                                          </ul>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-[10px] text-slate-300 bg-red-950/20 border border-red-900/30 rounded-lg p-2.5 leading-relaxed max-w-2xl shadow-sm">
+                                        <span className="font-bold text-red-400">Mensagem do Servidor:</span> <span className="italic">{item.error || "O modelo de inteligência artificial falhou ou demorou demais para responder."}</span>
+                                        <div className="block text-[9.5px] text-slate-400 mt-1.5 font-medium border-t border-red-900/10 pt-1 flex items-center gap-1">
+                                          <Info size={11} className="text-blue-400 shrink-0" />
+                                          <span>Dica: O serviço do Gemini pode estar temporariamente congestionado (Erro 503). Você pode reprocessar este item específico agora mesmo.</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                            {isFailed && (
+                              <button
+                                onClick={() => handleRetryItem(item.id)}
+                                className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-[10.5px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all shadow-md cursor-pointer"
+                                title="Reprocessar apenas este arquivo"
+                              >
+                                <RotateCw size={12} className="animate-spin-hover" />
+                                <span>Reprocessar Item</span>
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                // Allow removing item from session list
+                                setImportSessionItems(prev => prev.filter(i => i.id !== item.id));
+                                setStagedRecords(prev => prev.filter(r => (r as any).importItemId !== item.id));
+                              }}
+                              className="text-slate-500 hover:text-slate-300 hover:bg-slate-800/80 p-1.5 rounded transition-colors"
+                              title="Remover este item da fila"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Loader during Gemini execution (fallback/general feedback) */}
+              {importLoading && importSessionItems.length === 0 && (
                 <div className="p-8 text-center bg-slate-950/30 rounded border border-slate-800 flex flex-col items-center justify-center space-y-3">
                   <RefreshCw size={24} className="text-blue-500 animate-spin" />
                   <div>
@@ -1376,6 +1507,328 @@ export default function App() {
              ========================================== */}
           {activeTab === "dashboard" && (
             <div className="space-y-8 animate-fadeIn">
+              {globalSearch ? (() => {
+                const searchResults = getFilteredRecords();
+                const totalSearchInvestments = searchResults.reduce((acc, r) => acc + (parseFloat(r.recursos || "0") || 0), 0);
+                const uniqueCities = Array.from(new Set(searchResults.map((r) => r.cidade).filter(Boolean)));
+                const uniqueSectors = Array.from(new Set(searchResults.map((r) => r.sector).filter(Boolean)));
+
+                // Group if requested
+                let groupedItems: { [key: string]: DBRecord[] } | null = null;
+                if (searchGroupBy === "cidade") {
+                  groupedItems = {};
+                  searchResults.forEach((r) => {
+                    const groupKey = r.cidade || "Geral / Não Especificado";
+                    if (!groupedItems![groupKey]) groupedItems![groupKey] = [];
+                    groupedItems![groupKey].push(r);
+                  });
+                } else if (searchGroupBy === "sector") {
+                  groupedItems = {};
+                  searchResults.forEach((r) => {
+                    const s = getSectorById(r.sector);
+                    const groupKey = s ? `${s.icon} ${s.name}` : "📁 Outros";
+                    if (!groupedItems![groupKey]) groupedItems![groupKey] = [];
+                    groupedItems![groupKey].push(r);
+                  });
+                }
+
+                return (
+                  <div className="space-y-6">
+                    {/* Header search panel */}
+                    <div className="bg-gradient-to-r from-blue-900 to-indigo-950 p-6 rounded-2xl border border-blue-800 text-white shadow-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-fadeIn">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl">🔍</span>
+                          <h2 className="font-sans text-xl font-black tracking-tight leading-none">Central de Pesquisa Inteligente</h2>
+                        </div>
+                        <p className="text-blue-200 text-xs mt-1.5">
+                          Exibindo resultados claros e estruturados para o termo <span className="underline font-bold bg-blue-950/40 px-1 py-0.5 rounded text-white font-mono">"{globalSearch}"</span>
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => { setGlobalSearch(""); setSearchGroupBy("none"); }}
+                        className="bg-white/10 hover:bg-white/20 border border-white/20 text-white font-sans font-bold text-xs py-2 px-4 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        Limpar Filtro de Busca
+                      </button>
+                    </div>
+
+                    {/* Bento Search Metrics */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center text-xl text-blue-600 font-bold shrink-0">
+                          📋
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Ações Correspondentes</p>
+                          <p className="font-sans text-2xl font-black text-slate-900 leading-none mt-1">{searchResults.length}</p>
+                          <p className="text-[10px] text-slate-500 mt-1">Registros compatíveis</p>
+                        </div>
+                      </div>
+
+                      <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-emerald-50 flex items-center justify-center text-xl text-emerald-600 font-bold shrink-0">
+                          💰
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Recursos Totais na Busca</p>
+                          <p className="font-sans text-2xl font-black text-emerald-600 leading-none mt-1">{formatBRL(totalSearchInvestments)}</p>
+                          <p className="text-[10px] text-slate-500 mt-1">Verbas mapeadas</p>
+                        </div>
+                      </div>
+
+                      <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-purple-50 flex items-center justify-center text-xl text-purple-600 font-bold shrink-0">
+                          🗺️
+                        </div>
+                        <div>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Municípios Atendidos</p>
+                          <p className="font-sans text-2xl font-black text-slate-900 leading-none mt-1">{uniqueCities.length}</p>
+                          <p className="text-[10px] text-slate-500 mt-1">Cidades envolvidas nesta pesquisa</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Grouping Filter Bar */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
+                      <div className="text-slate-700 text-xs font-bold flex items-center gap-1.5">
+                        <Info size={14} className="text-blue-500 shrink-0" />
+                        <span>Visualize os resultados de forma organizada escolhendo o tipo de agrupamento abaixo:</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 shrink-0">
+                        <button
+                          onClick={() => setSearchGroupBy("none")}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                            searchGroupBy === "none"
+                              ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                              : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                          }`}
+                        >
+                          📋 Lista Corrida
+                        </button>
+                        <button
+                          onClick={() => setSearchGroupBy("cidade")}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                            searchGroupBy === "cidade"
+                              ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                              : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                          }`}
+                        >
+                          🏢 Agrupar por Cidade
+                        </button>
+                        <button
+                          onClick={() => setSearchGroupBy("sector")}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all border cursor-pointer ${
+                            searchGroupBy === "sector"
+                              ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                              : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                          }`}
+                        >
+                          📂 Agrupar por Setor
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Results Presentation block */}
+                    {searchResults.length === 0 ? (
+                      <div className="p-16 text-center bg-white border border-slate-200 rounded-2xl shadow-sm">
+                        <Search size={32} className="text-slate-300 mx-auto mb-3 animate-pulse" />
+                        <h3 className="text-slate-700 font-bold text-sm">Nenhum resultado encontrado</h3>
+                        <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                          Não encontramos nenhuma ação, cidade, PL, emenda ou observação que coincida com "{globalSearch}". Verifique a grafia ou tente termos alternativos.
+                        </p>
+                      </div>
+                    ) : groupedItems ? (
+                      // GROUPED VIEW
+                      <div className="space-y-6">
+                        {Object.entries(groupedItems).map(([groupName, items]) => {
+                          const groupInvest = items.reduce((sum, r) => sum + (parseFloat(r.recursos || "0") || 0), 0);
+                          return (
+                            <div key={groupName} className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm animate-fadeIn">
+                              {/* Group Header */}
+                              <div className="bg-slate-50 px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                <h3 className="font-sans text-sm font-black text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
+                                  <span>{groupName === "Geral / Não Especificado" ? "🌐" : "📍"} {groupName}</span>
+                                  <span className="font-mono text-[10px] bg-slate-200 text-slate-700 py-0.5 px-2 rounded-full font-bold">
+                                    {items.length} {items.length === 1 ? "ação" : "ações"}
+                                  </span>
+                                </h3>
+                                <div className="text-xs text-slate-500 font-semibold flex items-center gap-1.5">
+                                  <span>Recursos do grupo:</span>
+                                  <span className="font-extrabold text-emerald-600 font-mono">{formatBRL(groupInvest)}</span>
+                                </div>
+                              </div>
+
+                              {/* Group Table */}
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-left border-collapse text-xs">
+                                  <thead>
+                                    <tr className="bg-slate-100/50 border-b border-slate-200 text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                                      <th className="p-3">Data</th>
+                                      <th className="p-3">Setor</th>
+                                      <th className="p-3">Ação do Deputado</th>
+                                      {searchGroupBy !== "cidade" && <th className="p-3">Município</th>}
+                                      <th className="p-3">PL / Emenda</th>
+                                      <th className="p-3 text-right">Verba</th>
+                                      <th className="p-3">Status</th>
+                                      <th className="p-3 w-16"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {items.map((r) => {
+                                      const s = getSectorById(r.sector);
+                                      return (
+                                        <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                                          <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10.5px]">
+                                            {formatDateString(r.data)}
+                                          </td>
+                                          <td className="p-3 whitespace-nowrap">
+                                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
+                                              {s?.icon} {s?.name || r.sector}
+                                            </span>
+                                          </td>
+                                          <td className="p-3 text-slate-800 font-medium leading-relaxed max-w-sm">
+                                            {highlightText(r.deputado, globalSearch)}
+                                          </td>
+                                          {searchGroupBy !== "cidade" && (
+                                            <td className="p-3 whitespace-nowrap text-slate-700 font-bold">
+                                              {highlightText(r.cidade || "—", globalSearch)}
+                                            </td>
+                                          )}
+                                          <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10px]">
+                                            {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
+                                          </td>
+                                          <td className="p-3 text-right text-slate-900 font-bold whitespace-nowrap">
+                                            {parseFloat(r.recursos || "0") > 0 ? (
+                                              <span className="text-emerald-650 bg-emerald-50 px-2 py-1 rounded border border-emerald-100 font-mono font-bold">
+                                                {formatBRL(r.recursos)}
+                                              </span>
+                                            ) : (
+                                              <span className="text-slate-400 italic">Sem verba</span>
+                                            )}
+                                          </td>
+                                          <td className="p-3 whitespace-nowrap">
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
+                                              {r.status}
+                                            </span>
+                                          </td>
+                                          <td className="p-3 whitespace-nowrap">
+                                            <div className="flex items-center gap-1.5 justify-end">
+                                              <button 
+                                                onClick={() => handleOpenEditModal(r)}
+                                                className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors"
+                                                title="Editar"
+                                              >
+                                                <Edit size={12} />
+                                              </button>
+                                              <button 
+                                                onClick={() => handleDeleteRecord(r.id)}
+                                                className="p-1 text-slate-400 hover:text-rose-600 rounded hover:bg-rose-50 transition-colors"
+                                                title="Excluir"
+                                              >
+                                                <Trash2 size={12} />
+                                              </button>
+                                            </div>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      // SIMPLE LIST CARD VIEW
+                      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm animate-fadeIn">
+                        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+                          <span className="text-xs text-slate-500 font-bold uppercase">Resultado em Lista Única</span>
+                          <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded-full">
+                            {searchResults.length} itens encontrados
+                          </span>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs">
+                            <thead>
+                              <tr className="bg-slate-100/50 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                <th className="p-3">Data</th>
+                                <th className="p-3">Setor</th>
+                                <th className="p-3">Município</th>
+                                <th className="p-3">Ação do Deputado</th>
+                                <th className="p-3">PL / Emenda</th>
+                                <th className="p-3 text-right">Verba</th>
+                                <th className="p-3">Status</th>
+                                <th className="p-3 w-16"></th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {searchResults.map((r) => {
+                                const s = getSectorById(r.sector);
+                                return (
+                                  <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10.5px]">
+                                      {formatDateString(r.data)}
+                                    </td>
+                                    <td className="p-3 whitespace-nowrap">
+                                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
+                                        {s?.icon} {s?.name || r.sector}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 whitespace-nowrap text-slate-800 font-bold">
+                                      {highlightText(r.cidade || "—", globalSearch)}
+                                    </td>
+                                    <td className="p-3 text-slate-800 font-medium leading-relaxed max-w-sm">
+                                      {highlightText(r.deputado, globalSearch)}
+                                    </td>
+                                    <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10px]">
+                                      {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
+                                    </td>
+                                    <td className="p-3 text-right text-slate-900 font-bold whitespace-nowrap">
+                                      {parseFloat(r.recursos || "0") > 0 ? (
+                                        <span className="text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100 font-mono font-bold">
+                                          {formatBRL(r.recursos)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-400 italic">Sem verba</span>
+                                      )}
+                                    </td>
+                                    <td className="p-3 whitespace-nowrap">
+                                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
+                                        {r.status}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 whitespace-nowrap">
+                                      <div className="flex items-center gap-1.5 justify-end">
+                                        <button 
+                                          onClick={() => handleOpenEditModal(r)}
+                                          className="p-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-100 transition-colors"
+                                          title="Editar"
+                                        >
+                                          <Edit size={12} />
+                                        </button>
+                                        <button 
+                                          onClick={() => handleDeleteRecord(r.id)}
+                                          className="p-1 text-slate-400 hover:text-rose-600 rounded hover:bg-rose-50 transition-colors"
+                                          title="Excluir"
+                                        >
+                                          <Trash2 size={12} />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })() : (
+                <>
               
               {/* Header Title */}
               <div className="flex flex-col md:flex-row justify-between items-start gap-4">
@@ -1589,6 +2042,8 @@ export default function App() {
                 </div>
               </div>
 
+                </>
+              )}
             </div>
           )}
 
@@ -1989,100 +2444,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==========================================
-          EMAIL / PASSWORD AUTHENTICATION MODAL
-         ========================================== */}
-      {isAuthModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/55 backdrop-blur-sm flex items-center justify-center p-4">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.95, y: 15 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden flex flex-col"
-          >
-            {/* Modal Header */}
-            <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-              <div>
-                <h3 className="font-sans text-base font-bold text-slate-900 tracking-tight">
-                  {authMode === "login" ? "Acessar Conta" : "Criar Nova Conta"}
-                </h3>
-                <p className="text-slate-500 text-[11px] mt-0.5">
-                  {authMode === "login" 
-                    ? "Entre com seu e-mail e senha cadastrados." 
-                    : "Cadastre-se para manter seus registros seguros."}
-                </p>
-              </div>
-              <button 
-                onClick={() => { setIsAuthModalOpen(false); setAuthModalError(""); }} 
-                className="text-slate-400 hover:text-slate-600 transition-colors"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            {/* Modal Body */}
-            <form onSubmit={handleEmailAuth} className="p-6 space-y-4">
-              {authModalError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-xs font-medium leading-relaxed">
-                  ⚠️ {authModalError}
-                </div>
-              )}
-
-              <div className="flex flex-col gap-1.5">
-                <label className="font-bold text-slate-500 uppercase tracking-wider text-[10px]">E-mail *</label>
-                <input 
-                  type="email"
-                  required
-                  placeholder="seu-email@gmail.com"
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                  className="border border-slate-200 rounded-lg px-3.5 py-2.5 text-slate-800 outline-none focus:border-blue-500 text-xs transition-colors"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1.5">
-                <label className="font-bold text-slate-500 uppercase tracking-wider text-[10px]">Senha *</label>
-                <input 
-                  type="password"
-                  required
-                  placeholder="Sua senha secreta"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="border border-slate-200 rounded-lg px-3.5 py-2.5 text-slate-800 outline-none focus:border-blue-500 text-xs transition-colors"
-                />
-              </div>
-
-              {/* Submit button */}
-              <button
-                type="submit"
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-sans font-bold py-2.5 px-4 rounded-lg shadow transition-all flex items-center justify-center gap-2 mt-2 text-xs"
-              >
-                <span>{authMode === "login" ? "Entrar na Conta" : "Criar e Ativar Conta"}</span>
-              </button>
-
-              {/* Auth Mode Toggle */}
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode(authMode === "login" ? "register" : "login");
-                    setAuthModalError("");
-                  }}
-                  className="text-xs text-blue-600 hover:text-blue-700 font-bold transition-colors"
-                >
-                  {authMode === "login" 
-                    ? "Não tem uma conta? Cadastre-se aqui" 
-                    : "Já possui uma conta? Faça login"}
-                </button>
-              </div>
-
-              {/* Helpful iframe warning info */}
-              <div className="mt-4 p-3 bg-slate-50 rounded-lg border border-slate-200 text-[10px] text-slate-500 leading-relaxed">
-                💡 <strong>Dica de Conexão:</strong> Como o sistema é executado dentro do ambiente seguro do AI Studio, o login padrão do Google via popup pode ser bloqueado pelo navegador. Usar login com <strong>e-mail e senha</strong> é a solução 100% garantida e rápida de conectar.
-              </div>
-            </form>
-          </motion.div>
-        </div>
-      )}
 
     </div>
   );

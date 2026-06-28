@@ -39,6 +39,41 @@ function getGeminiClient(): GoogleGenAI {
   return aiClient;
 }
 
+// Helper to query Gemini with retry on transient errors (e.g. 503 UNAVAILABLE, 429 Rate Limit)
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: any,
+  maxRetries = 3,
+  initialDelayMs = 2000
+) {
+  let attempt = 1;
+  let delay = initialDelayMs;
+  while (true) {
+    try {
+      return await ai.models.generateContent(params);
+    } catch (err: any) {
+      const errStr = String(err.message || err);
+      const isTransient =
+        errStr.includes("503") ||
+        errStr.includes("UNAVAILABLE") ||
+        errStr.includes("high demand") ||
+        errStr.includes("429") ||
+        errStr.includes("ResourceExhausted") ||
+        err.status === 503 ||
+        err.status === 429;
+
+      if (isTransient && attempt <= maxRetries) {
+        console.warn(`[Gemini API] Erro temporário detectado (Tentativa ${attempt}/${maxRetries}). Aguardando ${delay}ms para tentar novamente... Erro:`, errStr);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        attempt++;
+        delay *= 2; // Exponential backoff
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 // -------------------------------------------------------------
 // API ROUTES
 // -------------------------------------------------------------
@@ -198,8 +233,8 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       `;
     }
 
-    // Perform Structured content generation
-    const response = await ai.models.generateContent({
+    // Perform Structured content generation with retry
+    const response = await generateContentWithRetry(ai, {
       model: "gemini-3.5-flash",
       contents: contents,
       config: {
@@ -256,19 +291,30 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
   } catch (error: any) {
     console.error("Gemini classification failed:", error);
     
+    const errStr = String(error.message || error);
+    const isQuotaError = 
+      errStr.includes("429") || 
+      errStr.toLowerCase().includes("quota") || 
+      errStr.toLowerCase().includes("limit") || 
+      errStr.includes("RESOURCE_EXHAUSTED");
+      
+    const friendlyErrorMessage = isQuotaError 
+      ? "Limite de Cota Excedido (Quota Exceeded). O texto/arquivo enviado ultrapassou a capacidade por minuto da chave de API gratuita do Gemini. Aguarde 1 minuto para o limite resetar antes de tentar novamente, ou divida o texto em pedaços menores."
+      : error.message;
+
     // Save error execution log
     try {
       await db.insert(executionLogs).values({
         action: "IMPORT_FILE",
         status: "ERROR",
-        details: `Falha no processamento de classificação via Gemini: ${error.message}`,
+        details: `Falha no processamento de classificação via Gemini: ${friendlyErrorMessage} (Detalhes técnicos: ${error.message})`,
         userEmail: req.user?.email || "anonymous",
       });
     } catch (e) {
       console.error("Failed to write error log:", e);
     }
 
-    res.status(500).json({ error: "Gemini processing failed: " + error.message });
+    res.status(500).json({ error: "Gemini processing failed: " + friendlyErrorMessage });
   }
 });
 
