@@ -1,0 +1,6 @@
+{
+  "name": "Matriz de Diretrizes Políticas",
+  "description": "Painel de gestão e classificação inteligente de atividades políticas catarinenses com processamento Gemini AI e persistência em SQL Server.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
