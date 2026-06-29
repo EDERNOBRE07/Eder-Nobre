@@ -24,8 +24,8 @@ let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI {
   if (!aiClient) {
     const key = process.env.GEMINI_API_KEY;
-    if (!key) {
-      throw new Error("GEMINI_API_KEY environment variable is required");
+    if (!key || key.trim() === "") {
+      throw new Error("GEMINI_API_KEY environment variable is required. Por favor, adicione uma chave de API do Gemini válida nas Configurações/Secrets da plataforma.");
     }
     aiClient = new GoogleGenAI({
       apiKey: key,
@@ -235,7 +235,7 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
 
     // Perform Structured content generation with retry
     const response = await generateContentWithRetry(ai, {
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: contents,
       config: {
         responseMimeType: "application/json",
@@ -292,6 +292,11 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
     console.error("Gemini classification failed:", error);
     
     const errStr = String(error.message || error);
+    const isPrepaymentDepleted = 
+      errStr.toLowerCase().includes("prepayment") || 
+      errStr.toLowerCase().includes("depleted") || 
+      errStr.toLowerCase().includes("credits");
+
     const isQuotaError = 
       errStr.includes("429") || 
       errStr.toLowerCase().includes("quota") || 
@@ -305,11 +310,13 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       errStr.toLowerCase().includes("credentials") ||
       errStr.toLowerCase().includes("auth");
 
-    const friendlyErrorMessage = isQuotaError 
-      ? "Limite de Cota Excedido (Quota Exceeded). O texto/arquivo enviado ultrapassou a capacidade por minuto da chave de API gratuita do Gemini. Aguarde 1 minuto para o limite resetar antes de tentar novamente, ou divida o texto em pedaços menores."
-      : isAuthError
-        ? "Erro de Autenticação (401 - UNAUTHENTICATED): A chave de API do Gemini (GEMINI_API_KEY) configurada na plataforma está inválida ou expirou. Por favor, acesse o painel de Configurações/Secrets no Google AI Studio e adicione uma GEMINI_API_KEY válida para restabelecer a integração."
-        : error.message;
+    const friendlyErrorMessage = isPrepaymentDepleted
+      ? "Créditos Pré-Pagos Esgotados (Prepayment Credits Depleted): A conta associada a esta chave do Gemini está sem saldo. Para utilizar o MODO GRATUITO (Free Tier) sem custos ou consumo de créditos, basta acessar o Google AI Studio (https://aistudio.google.com/), criar uma chave de API em um NOVO PROJETO (garantindo que este novo projeto não tenha faturamento ou cartão vinculado) e adicioná-la no menu Secrets/Configurações da plataforma."
+      : isQuotaError 
+        ? "Limite de Cota Excedido (Quota Exceeded). O texto/arquivo enviado ultrapassou a capacidade por minuto da chave de API gratuita do Gemini. Aguarde 1 minuto para o limite resetar antes de tentar novamente, ou divida o texto em pedaços menores."
+        : isAuthError
+          ? "Erro de Autenticação (401 - UNAUTHENTICATED): A chave de API do Gemini (GEMINI_API_KEY) configurada na plataforma está inválida ou expirou. Por favor, acesse o painel de Configurações/Secrets no Google AI Studio e adicione uma GEMINI_API_KEY válida para restabelecer a integração."
+          : error.message;
 
     // Save error execution log
     try {
