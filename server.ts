@@ -14,7 +14,7 @@ import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { desc } from "drizzle-orm";
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = 3000;
 
 // Body parser with 20MB limit to handle files/extracted text
 app.use(express.json({ limit: "20mb" }));
