@@ -298,9 +298,18 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       errStr.toLowerCase().includes("limit") || 
       errStr.includes("RESOURCE_EXHAUSTED");
       
+    const isAuthError =
+      errStr.includes("401") ||
+      errStr.toLowerCase().includes("unauthenticated") ||
+      errStr.toLowerCase().includes("invalid authentication") ||
+      errStr.toLowerCase().includes("credentials") ||
+      errStr.toLowerCase().includes("auth");
+
     const friendlyErrorMessage = isQuotaError 
       ? "Limite de Cota Excedido (Quota Exceeded). O texto/arquivo enviado ultrapassou a capacidade por minuto da chave de API gratuita do Gemini. Aguarde 1 minuto para o limite resetar antes de tentar novamente, ou divida o texto em pedaços menores."
-      : error.message;
+      : isAuthError
+        ? "Erro de Autenticação (401 - UNAUTHENTICATED): A chave de API do Gemini (GEMINI_API_KEY) configurada na plataforma está inválida ou expirou. Por favor, acesse o painel de Configurações/Secrets no Google AI Studio e adicione uma GEMINI_API_KEY válida para restabelecer a integração."
+        : error.message;
 
     // Save error execution log
     try {
