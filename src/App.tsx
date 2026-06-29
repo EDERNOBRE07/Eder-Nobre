@@ -912,12 +912,60 @@ export default function App() {
       <aside className="w-full md:w-64 bg-slate-900 text-slate-300 flex-shrink-0 flex flex-col border-r border-slate-800 shadow-xl">
         {/* Title Brand / Logo */}
         <div className="py-7 px-6 border-b border-slate-800 flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center font-bold text-white shadow-md">
-            M
+          {/* Toucan Vector Logo representing "Matriz MV / Diretrizes Políticas" */}
+          <div className="w-10 h-10 rounded-xl bg-[#1b45b4] flex items-center justify-center shadow-lg border border-white/10 shrink-0 overflow-hidden relative">
+            {/* White diagonal background light beam */}
+            <div className="absolute -bottom-2 -left-6 w-16 h-16 bg-[#f1f5f9]/10 rotate-45 transform origin-bottom-left"></div>
+            
+            <svg viewBox="0 0 100 100" className="w-8 h-8 relative z-10" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {/* Light-gray diagonal background banner extending to bottom-left */}
+              <path d="M -10 110 L 35 65 L 50 80 L 5 125 Z" fill="#f1f5f9" opacity="0.95" />
+              
+              {/* White outline/silhouette of the entire toucan */}
+              <path 
+                d="M 20,74 C 20,58 32,46 46,50 C 56,53 62,64 56,76 C 50,85 28,88 20,74 Z" 
+                fill="white" 
+              />
+              
+              {/* Blue plumage (feathers) on the left side, overlapping the white head */}
+              <path 
+                d="M 18 72 C 11 74 6 82 14 88 C 20 92 28 90 31 82 C 26 80 21 76 18 72 Z" 
+                fill="#1b45b4" 
+                stroke="white" 
+                strokeWidth="3.5" 
+                strokeLinejoin="round" 
+              />
+              <path 
+                d="M 12 79 C 4 82 8 90 14 93 C 20 95 26 92 27 85 C 22 84 16 82 12 79 Z" 
+                fill="#1b45b4" 
+                stroke="white" 
+                strokeWidth="3.5" 
+                strokeLinejoin="round" 
+              />
+              
+              {/* Beak (Yellow base and Green tip) */}
+              <path 
+                d="M 43,51 C 46,38 58,26 76,18 C 70,30 58,43 43,51 Z" 
+                fill="#f5b041" 
+                stroke="white" 
+                strokeWidth="3.5" 
+                strokeLinejoin="round" 
+              />
+              <path 
+                d="M 62,24 C 68,20 73,18 76,18 C 73,26 68,30 62,24 Z" 
+                fill="#2ecc71" 
+                stroke="white" 
+                strokeWidth="3.5" 
+                strokeLinejoin="round" 
+              />
+              
+              {/* Black/Blue Eye */}
+              <circle cx="39" cy="62" r="4.5" fill="#1b45b4" />
+            </svg>
           </div>
           <div>
-            <h1 className="font-sans text-lg font-bold tracking-tight text-slate-100">MATRIZ MV</h1>
-            <p className="text-[10px] tracking-widest text-blue-500/80 font-bold uppercase">DIRETRIZES POLÍTICAS</p>
+            <h1 className="font-sans text-sm font-bold tracking-tight text-slate-100 leading-none">MATRIZ MV</h1>
+            <p className="text-[9px] tracking-widest text-blue-400 font-bold uppercase mt-1">DIRETRIZES POLÍTICAS</p>
           </div>
         </div>
 
