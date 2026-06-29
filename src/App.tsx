@@ -981,11 +981,12 @@ export default function App() {
             </span>
           </div>
           <div className="flex flex-col gap-2 mt-1">
-            {user && user.isAnonymous ? (
+            {(!user || user.isAnonymous) ? (
               <div className="flex flex-col gap-1.5 w-full">
                 <button 
                   onClick={handleGoogleLogin} 
-                  className="w-full bg-slate-800 hover:bg-slate-750 text-slate-100 border border-slate-700 font-sans font-bold py-2 px-3 rounded-lg transition-all text-xs text-center flex items-center justify-center gap-2 shadow-sm cursor-pointer hover:border-slate-600 hover:shadow-md"
+                  disabled={authLoading}
+                  className="w-full bg-slate-800 hover:bg-slate-750 text-slate-100 border border-slate-700 font-sans font-bold py-2 px-3 rounded-lg transition-all text-xs text-center flex items-center justify-center gap-2 shadow-sm cursor-pointer hover:border-slate-600 hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg className="w-4 h-4 shrink-0 bg-white p-0.5 rounded-full" viewBox="0 0 24 24" referrerPolicy="no-referrer">
                     <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -999,7 +1000,8 @@ export default function App() {
             ) : (
               <button 
                 onClick={handleLogout} 
-                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded border border-slate-700/60 transition-colors text-[11px] flex items-center justify-center gap-1 cursor-pointer"
+                disabled={authLoading}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 py-1.5 px-2.5 rounded border border-slate-700/60 transition-colors text-[11px] flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
               >
                 <LogOut size={11} /> Sair da Conta
               </button>
