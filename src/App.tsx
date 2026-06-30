@@ -99,6 +99,9 @@ export default function App() {
   const [driveSearch, setDriveSearch] = useState("");
   const [isFetchingDrive, setIsFetchingDrive] = useState(false);
 
+  // Database status tracking
+  const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
+
   // -------------------------------------------------------------
   // AUTHENTICATION FLOW
   // -------------------------------------------------------------
@@ -164,25 +167,99 @@ export default function App() {
   const fetchDriveFiles = async (tokenToUse: string) => {
     setIsFetchingDrive(true);
     try {
-      const q = "trashed = false and (name contains '.pdf' or name contains '.docx' or name contains '.xlsx' or name contains '.xls' or name contains '.csv' or name contains '.txt')";
-      const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,modifiedTime)`;
+      const rootFolderId = "1CgDwxakh_QrZaXhXL3OOzVwQ7rRu_5aA";
+      const allFolderIds: string[] = [rootFolderId];
       
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${tokenToUse}`
+      // Multi-level recursive BFS traversal to find ALL subfolders of any depth
+      try {
+        let currentLevelParents = [rootFolderId];
+        // We go up to 5 levels deep
+        for (let level = 0; level < 5; level++) {
+          if (currentLevelParents.length === 0) break;
+          
+          const nextLevelFolderIds: string[] = [];
+          const batchSize = 25; // to keep query string safe and short
+          
+          for (let i = 0; i < currentLevelParents.length; i += batchSize) {
+            const batch = currentLevelParents.slice(i, i + batchSize);
+            const parentSegment = batch.map(id => `'${id}' in parents`).join(" or ");
+            const qFolders = `(${parentSegment}) and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+            const urlFolders = `https://www.googleapis.com/drive/v3/files?pageSize=100&q=${encodeURIComponent(qFolders)}&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+            
+            const sfResponse = await fetch(urlFolders, {
+              headers: { Authorization: `Bearer ${tokenToUse}` }
+            });
+            
+            if (sfResponse.ok) {
+              const sfData = await sfResponse.json();
+              const foundIds = (sfData.files || []).map((f: any) => f.id);
+              nextLevelFolderIds.push(...foundIds);
+            } else {
+              console.warn(`[Drive API] Failed to fetch subfolders batch: ${sfResponse.statusText}`);
+            }
+          }
+          
+          if (nextLevelFolderIds.length === 0) break;
+          allFolderIds.push(...nextLevelFolderIds);
+          currentLevelParents = nextLevelFolderIds;
         }
-      });
+      } catch (folderErr) {
+        console.warn("Failed to retrieve subfolder structure, falling back to root level only:", folderErr);
+      }
+
+      // Query files inside all identified folders in batches
+      const allFiles: any[] = [];
+      const folderBatchSize = 20;
       
-      if (!response.ok) {
-        if (response.status === 401) {
-          setDriveToken(null);
-          throw new Error("Sua sessão do Google Drive expirou. Por favor, reconecte.");
+      for (let i = 0; i < allFolderIds.length; i += folderBatchSize) {
+        const batch = allFolderIds.slice(i, i + folderBatchSize);
+        const parentQueries = batch.map(id => `'${id}' in parents`).join(" or ");
+        
+        // Match both by literal file extensions (case-insensitive in containing name checks) AND by official MIME types
+        const fileExtensions = [".pdf", ".PDF", ".docx", ".DOCX", ".xlsx", ".XLSX", ".xls", ".XLS", ".csv", ".CSV", ".txt", ".TXT"];
+        const extQueries = fileExtensions.map(ext => `name contains '${ext}'`).join(" or ");
+        
+        const mimeTypes = [
+          "application/pdf",
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "application/msword",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "application/vnd.ms-excel",
+          "text/csv",
+          "text/plain",
+          "application/vnd.google-apps.document",
+          "application/vnd.google-apps.spreadsheet",
+          "application/vnd.google-apps.presentation"
+        ];
+        const mimeQueries = mimeTypes.map(mime => `mimeType = '${mime}'`).join(" or ");
+        
+        const q = `(${parentQueries}) and trashed = false and (${extQueries} or ${mimeQueries})`;
+        const url = `https://www.googleapis.com/drive/v3/files?pageSize=100&q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,size,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+        
+        const response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${tokenToUse}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          allFiles.push(...(data.files || []));
+        } else {
+          if (response.status === 401) {
+            setDriveToken(null);
+            throw new Error("Sua sessão do Google Drive expirou. Por favor, reconecte.");
+          }
+          console.warn(`[Drive API] Error fetching files batch for folders ${batch.join(",")}: ${response.statusText}`);
         }
-        throw new Error(`Erro API Google Drive: ${response.statusText}`);
       }
       
-      const data = await response.json();
-      setDriveFiles(data.files || []);
+      // Deduplicate files by id
+      const uniqueFiles = Array.from(new Map(allFiles.map(f => [f.id, f])).values());
+      // Sort files by modifiedTime descending
+      uniqueFiles.sort((a: any, b: any) => new Date(b.modifiedTime || 0).getTime() - new Date(a.modifiedTime || 0).getTime());
+      
+      setDriveFiles(uniqueFiles);
     } catch (err: any) {
       console.error("Failed to fetch Google Drive files:", err);
       showToast(err.message || "Erro ao listar arquivos do Google Drive.", "error");
@@ -246,6 +323,10 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!recRes.ok) throw new Error("HTTP " + recRes.status);
+      
+      const dbSource = recRes.headers.get("X-Database-Source");
+      setIsDbFallbackLocal(dbSource === "fallback-local");
+
       const recData = await recRes.json();
       setRecords(recData);
 
@@ -287,7 +368,14 @@ export default function App() {
         throw new Error(errObj.error || "HTTP " + response.status);
       }
 
-      showToast("Dados sincronizados com o banco de dados SQL!", "success");
+      const resJson = await response.json();
+      setIsDbFallbackLocal(!!resJson.local);
+
+      if (resJson.local) {
+        showToast("Dados salvos localmente! (Aviso: Banco PostgreSQL desconectado)", "info");
+      } else {
+        showToast("Dados sincronizados com o banco de dados SQL!", "success");
+      }
       await fetchData(); // Reload to obtain updated logs and confirmed records
     } catch (err: any) {
       console.error("Sync failed:", err);
@@ -365,7 +453,24 @@ export default function App() {
         
         // If it's a drive file and we don't have the fileObject yet, download it first!
         if (item.type === "drive" && !file && item.driveFileId) {
-          const url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}?alt=media`;
+          const isGoogleDoc = item.driveMimeType === "application/vnd.google-apps.document";
+          const isGoogleSheet = item.driveMimeType === "application/vnd.google-apps.spreadsheet";
+          const isGoogleSlide = item.driveMimeType === "application/vnd.google-apps.presentation";
+          
+          let url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}?alt=media&supportsAllDrives=true`;
+          let targetMimeType = item.driveMimeType || "application/octet-stream";
+          
+          if (isGoogleDoc) {
+            url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}/export?mimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document&supportsAllDrives=true`;
+            targetMimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+          } else if (isGoogleSheet) {
+            url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet&supportsAllDrives=true`;
+            targetMimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+          } else if (isGoogleSlide) {
+            url = `https://www.googleapis.com/drive/v3/files/${item.driveFileId}/export?mimeType=application/pdf&supportsAllDrives=true`;
+            targetMimeType = "application/pdf";
+          }
+          
           const response = await fetch(url, {
             headers: {
               Authorization: `Bearer ${driveToken}`
@@ -377,7 +482,17 @@ export default function App() {
           }
           
           const blob = await response.blob();
-          file = new File([blob], item.name.replace("Google Drive: ", ""), { type: item.driveMimeType || "application/octet-stream" });
+          
+          let exportedName = item.name.replace("Google Drive: ", "");
+          if (isGoogleDoc && !exportedName.toLowerCase().endsWith(".docx")) {
+            exportedName += ".docx";
+          } else if (isGoogleSheet && !exportedName.toLowerCase().endsWith(".xlsx")) {
+            exportedName += ".xlsx";
+          } else if (isGoogleSlide && !exportedName.toLowerCase().endsWith(".pdf")) {
+            exportedName += ".pdf";
+          }
+          
+          file = new File([blob], exportedName, { type: targetMimeType });
           item.fileObject = file; // Cache fileObject
         }
 
@@ -404,13 +519,30 @@ export default function App() {
           const parseResult = await mammoth.extractRawText({ arrayBuffer });
           extractedText = parseResult.value;
         } else if (ext === "pdf") {
-          fileBase64 = await fileToBase64(file);
-          mimeType = "application/pdf";
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+            const pdfDoc = await loadingTask.promise;
+            let fullText = "";
+            for (let i = 1; i <= pdfDoc.numPages; i++) {
+              const page = await pdfDoc.getPage(i);
+              const textContent = await page.getTextContent();
+              const pageText = textContent.items
+                .map((item: any) => item.str)
+                .join(" ");
+              fullText += `--- Página ${i} ---\n${pageText}\n`;
+            }
+            extractedText = fullText;
+          } catch (pdfErr: any) {
+            console.error("Erro ao extrair texto do PDF via pdfjs, usando fallback base64:", pdfErr);
+            fileBase64 = await fileToBase64(file);
+            mimeType = "application/pdf";
+          }
         } else {
           throw new Error(`O formato de arquivo .${ext} não é suportado.`);
         }
 
-        if (ext !== "pdf" && !extractedText.trim()) {
+        if (!extractedText.trim() && !fileBase64) {
           throw new Error("Não foi possível extrair nenhum texto legível deste documento.");
         }
       }
@@ -1007,6 +1139,29 @@ export default function App() {
               </button>
             )}
           </div>
+
+          {/* Database Connection Status / Information */}
+          <div className="mt-2.5 pt-2.5 border-t border-slate-800/60 flex flex-col gap-1">
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-slate-500 font-medium font-mono uppercase tracking-wider">Base de Dados:</span>
+              {isDbFallbackLocal ? (
+                <span className="text-amber-400 font-bold flex items-center gap-1" title="Fallback Local Ativo">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                  Modo Backup (JSON)
+                </span>
+              ) : (
+                <span className="text-emerald-400 font-bold flex items-center gap-1" title="PostgreSQL Real Ativo">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  PostgreSQL Conectado
+                </span>
+              )}
+            </div>
+            {isDbFallbackLocal && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-md p-2 mt-1 text-[10px] text-amber-300 leading-relaxed">
+                ⚠️ <strong>Nota Google Cloud / Hostinger:</strong> O banco SQL está inacessível ou não configurado. Os dados estão sendo salvos localmente (JSON), mas em servidores como <strong>Cloud Run</strong>, este armazenamento é efêmero e será apagado nas reinicializações do container. Certifique-se de configurar e liberar as credenciais de rede do seu banco de dados no Google Cloud.
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Navigation Options */}
@@ -1237,7 +1392,15 @@ export default function App() {
                           <Cloud size={14} className="text-emerald-500" /> Importar do Google Drive
                         </h4>
                         <p className="text-[11px] text-slate-500 mt-1.5 leading-normal">
-                          Importe relatórios de atividades, diários oficiais ou documentos parlamentares diretamente da sua nuvem.
+                          Importe arquivos diretamente da pasta compartilhada do Google Drive:{" "}
+                          <a 
+                            href="https://drive.google.com/drive/folders/1CgDwxakh_QrZaXhXL3OOzVwQ7rRu_5aA" 
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="text-emerald-400 hover:underline break-all"
+                          >
+                            Abrir Pasta ↗
+                          </a>
                         </p>
                       </div>
                       <button

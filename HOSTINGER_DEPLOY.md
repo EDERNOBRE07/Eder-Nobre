@@ -121,3 +121,29 @@ Caso esteja usando SSH e queira manter o aplicativo rodando em segundo plano mes
    ```
 
 Pronto! Seu sistema de controle parlamentar integrado com Google Drive, Inteligência Artificial Gemini 3.5 Flash e prevenção de duplicados está 100% publicado e online no seu subdomínio Hostinger! 🎉
+
+---
+
+## 🛠️ Solução de Problemas: O botão "Entrar com Google" não funciona no Domínio Customizado
+
+Quando você hospeda o projeto sob um domínio customizado (como `https://matrizmvpsdb.mastervisionmarketing.com/`), o Google Login via Firebase Authentication falhará com erro de segurança a menos que o domínio esteja explicitamente autorizado. Para corrigir isso e fazer o login funcionar perfeitamente:
+
+### Passo A: Autorizar o Domínio no Firebase Console
+1. Acesse o [Firebase Console](https://console.firebase.google.com/).
+2. Abra o projeto correspondente à sua aplicação (verifique o `projectId` em `/firebase-applet-config.json`, que por padrão é `gen-lang-client-0337601108`).
+3. No menu lateral esquerdo, vá em **Autenticação (Authentication)** e depois clique na aba **Configurações (Settings)** na parte superior.
+4. Na lista de seções, clique em **Domínios Autorizados (Authorized Domains)**.
+5. Clique em **Adicionar Domínio (Add Domain)**.
+6. Digite seu domínio de produção sem o `https://` (ex: `matrizmvpsdb.mastervisionmarketing.com`) e clique em **Adicionar**.
+
+### Passo B: Autorizar as Origens no Google Cloud Console
+1. Acesse o [Google Cloud Console](https://console.cloud.google.com/).
+2. No topo da página, selecione o mesmo projeto do Firebase (`gen-lang-client-0337601108` ou o correspondente).
+3. No menu lateral esquerdo, vá em **APIs e Serviços (APIs & Services)** -> **Credenciais (Credentials)**.
+4. Na seção **IDs de cliente OAuth 2.0 (OAuth 2.0 Client IDs)**, clique para editar o cliente Web (geralmente chamado de `Web client (auto-created by Google Service)`).
+5. Na seção **Origens JavaScript autorizadas (Authorized JavaScript origins)**, clique em **Adicionar URI** e adicione o seu domínio customizado completo (ex: `https://matrizmvpsdb.mastervisionmarketing.com`).
+6. Na seção **URIs de redirecionamento autorizadas (Authorized redirect URIs)**, certifique-se de que a URL de callback do Firebase está presente. Ela deve se parecer com: `https://gen-lang-client-0337601108.firebaseapp.com/__/auth/handler` (ou substitua pelo subdomínio correspondente ao ID do seu projeto Firebase).
+7. Clique em **Salvar (Save)** na parte inferior da página.
+
+*Nota: As alterações de DNS e de segurança do Google Cloud Console podem levar de 5 a 15 minutos para propagar completamente. Após essa configuração, o login com o Google no seu site de produção funcionará com total sucesso!*
+
