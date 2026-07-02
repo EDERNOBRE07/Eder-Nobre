@@ -89,8 +89,8 @@ const PORT = 3000;
 app.use(express.json({ limit: "20mb" }));
 
 // Initialize Gemini SDK dynamically to avoid cached key issues
-function getGeminiClient(): GoogleGenAI {
-  let key = process.env.GEMINI_API_KEY;
+function getGeminiClient(req?: express.Request): GoogleGenAI {
+  let key = (req?.headers["x-gemini-api-key"] as string) || process.env.GEMINI_API_KEY;
   if (key) {
     key = key.trim();
   }
@@ -368,7 +368,7 @@ app.post("/api/records/classify", requireAuth, async (req: AuthRequest, res) => 
     const email = req.user?.email || "anonymous";
 
     // Initialize Gemini and query Structured Output
-    const ai = getGeminiClient();
+    const ai = getGeminiClient(req);
 
     let extractedRecords: any[] = [];
 

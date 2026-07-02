@@ -44,7 +44,8 @@ import {
   CheckCircle2,
   Loader2,
   RotateCw,
-  Info
+  Info,
+  Settings
 } from "lucide-react";
 
 // Third-party file parsers (installed)
@@ -103,6 +104,10 @@ export default function App() {
 
   // Database status tracking
   const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
+
+  // Settings and Custom API Keys state
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [customGeminiKey, setCustomGeminiKey] = useState<string>(() => localStorage.getItem("custom_gemini_api_key") || "");
 
   // Auth domain mismatch modal helper
   const [authErrorModal, setAuthErrorModal] = useState<{ isOpen: boolean; code: string; message: string } | null>(null);
@@ -629,7 +634,8 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          Authorization: `Bearer ${token}`,
+          "X-Gemini-API-Key": customGeminiKey
         },
         body: JSON.stringify({ 
           text: extractedText, 
@@ -650,36 +656,38 @@ export default function App() {
         const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
 
         if (autoSaveAfterImport) {
-          // Immediately sync with database
-          const combined = [...records, ...taggedNew];
-          setRecords(combined);
-
-          const success = await syncWithDatabase(combined);
-          if (success) {
-            setImportSessionItems((prev) =>
-              prev.map((i) =>
-                i.id === item.id
-                  ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
-                  : i
-              )
-            );
-            showToast(`"${item.name}" processado e gravado no banco SQL com sucesso!`, "success");
-          } else {
-            // Fail-safe fallback to manual staging
-            setStagedRecords((prevStaged) => {
-              const cleanPrev = prevStaged.filter((r) => (r as any).importItemId !== item.id);
-              return [...cleanPrev, ...taggedNew];
+          // Immediately sync with database using functional updater to prevent stale closures
+          setRecords((prevRecords) => {
+            const combined = [...prevRecords, ...taggedNew];
+            syncWithDatabase(combined).then((success) => {
+              if (success) {
+                setImportSessionItems((prev) =>
+                  prev.map((i) =>
+                    i.id === item.id
+                      ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                      : i
+                  )
+                );
+                showToast(`"${item.name}" processado e gravado no banco SQL com sucesso!`, "success");
+              } else {
+                // Fail-safe fallback to manual staging
+                setStagedRecords((prevStaged) => {
+                  const cleanPrev = prevStaged.filter((r) => (r as any).importItemId !== item.id);
+                  return [...cleanPrev, ...taggedNew];
+                });
+                setIsImportPanelOpen(true);
+                setImportSessionItems((prev) =>
+                  prev.map((i) =>
+                    i.id === item.id
+                      ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                      : i
+                  )
+                );
+                showToast(`O salvamento automático falhou para "${item.name}". Exibindo lote para gravação manual.`, "error");
+              }
             });
-            setIsImportPanelOpen(true);
-            setImportSessionItems((prev) =>
-              prev.map((i) =>
-                i.id === item.id
-                  ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
-                  : i
-              )
-            );
-            showToast(`O salvamento automático falhou para "${item.name}". Exibindo lote para gravação manual.`, "error");
-          }
+            return combined;
+          });
         } else {
           // Normal manual preview mode
           setStagedRecords((prevStaged) => {
@@ -1463,6 +1471,14 @@ export default function App() {
             <Activity size={15} />
             <span>Logs de Execução</span>
             <span className="ml-auto text-[10px] bg-slate-800 text-slate-400 py-0.5 px-2 rounded-full font-mono">{logs.length}</span>
+          </button>
+
+          <button 
+            onClick={() => setIsSettingsModalOpen(true)}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded text-xs font-semibold uppercase tracking-wider transition-all duration-150 hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+          >
+            <Settings size={15} />
+            <span>Configurações</span>
           </button>
 
           <p className="px-3 pt-4 text-[10px] font-bold tracking-wider text-slate-500 uppercase mb-2">Setores Editoriais</p>
@@ -3086,7 +3102,99 @@ export default function App() {
           </motion.div>
         </div>
       )}
+      {/* Settings Modal */}
+      {isSettingsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-fadeIn">
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl flex flex-col text-left"
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-800 bg-slate-950 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">⚙️</span>
+                <h3 className="font-sans text-sm font-bold uppercase tracking-wider text-slate-100">Configurações do Sistema</h3>
+              </div>
+              <button 
+                onClick={() => setIsSettingsModalOpen(false)} 
+                className="text-slate-400 hover:text-white rounded p-1 transition-colors hover:bg-slate-800 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
 
+            {/* Modal Body */}
+            <div className="px-6 py-6 space-y-5 text-xs text-slate-300 max-h-[80vh] overflow-y-auto scrollbar-thin">
+              <div className="space-y-2">
+                <label className="block font-semibold text-slate-200">Chave de API do Gemini (GEMINI_API_KEY)</label>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  Caso o seu servidor de produção não possua a variável de ambiente <code className="text-emerald-400 font-mono bg-slate-950 px-1 py-0.5 rounded">GEMINI_API_KEY</code> configurada, você pode definir a sua própria chave de API do Gemini aqui. Ela será salva de forma segura apenas no seu navegador e usada para as operações de inteligência artificial.
+                </p>
+                <input 
+                  type="password" 
+                  value={customGeminiKey} 
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    setCustomGeminiKey(val);
+                    localStorage.setItem("custom_gemini_api_key", val);
+                  }}
+                  placeholder="Cole sua GEMINI_API_KEY aqui..."
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-lg py-2 px-3 text-slate-100 placeholder-slate-600 focus:outline-none font-mono"
+                />
+                {customGeminiKey ? (
+                  <p className="text-[10px] text-emerald-400 flex items-center gap-1">
+                    <CheckCircle2 size={11} /> Chave personalizada configurada localmente! (Termina em: ...{customGeminiKey.slice(-6)})
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-amber-400 flex items-center gap-1">
+                    <Info size={11} /> Usando a chave de API padrão do servidor (se configurada).
+                  </p>
+                )}
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <h4 className="font-semibold text-slate-200">Status de Conexão com o Banco de Dados</h4>
+                <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 font-mono text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Armazenamento Ativo:</span>
+                    <span className={isDbFallbackLocal ? "text-amber-400" : "text-emerald-400"}>
+                      {isDbFallbackLocal ? "Fallback Local (JSON)" : "Nuvem Segura (PostgreSQL/Firestore)"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Modo de Gravação:</span>
+                    <span className="text-slate-100">{autoSaveAfterImport ? "Gravação Direta" : "Rascunho Provisório"}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 text-[10.5px] text-slate-400 leading-relaxed space-y-1">
+                <p className="font-bold text-slate-300">Como obter uma chave do Gemini gratuita:</p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li>Acesse o <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Google AI Studio ↗</a>.</li>
+                  <li>Clique em "Get API Key" e crie uma chave em um novo projeto.</li>
+                  <li>Certifique-se de que o projeto esteja no plano gratuito para evitar cobranças.</li>
+                  <li>Copie e cole a chave no campo acima!</li>
+                </ol>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-800 bg-slate-950 flex justify-end">
+              <button 
+                onClick={() => {
+                  setIsSettingsModalOpen(false);
+                  showToast("Configurações salvas com sucesso!", "success");
+                }} 
+                className="py-2 px-5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors cursor-pointer"
+              >
+                Fechar e Salvar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
     </div>
   );
