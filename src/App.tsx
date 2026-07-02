@@ -53,7 +53,7 @@ import mammoth from "mammoth";
 import * as pdfjs from "pdfjs-dist";
 
 // Configure PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 export default function App() {
   // Authentication State
@@ -89,9 +89,11 @@ export default function App() {
   const [importSessionItems, setImportSessionItems] = useState<ImportSessionItem[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSource, setImportSource] = useState("");
+  const [autoSaveAfterImport, setAutoSaveAfterImport] = useState<boolean>(true);
   const [pastedText, setPastedText] = useState("");
   const [isPasteAreaOpen, setIsPasteAreaOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [sessionStartTime] = useState<number>(() => Date.now());
 
   // Google Drive State Variables
   const [driveToken, setDriveToken] = useState<string | null>(null);
@@ -101,6 +103,9 @@ export default function App() {
 
   // Database status tracking
   const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
+
+  // Auth domain mismatch modal helper
+  const [authErrorModal, setAuthErrorModal] = useState<{ isOpen: boolean; code: string; message: string } | null>(null);
 
   // -------------------------------------------------------------
   // AUTHENTICATION FLOW
@@ -121,7 +126,19 @@ export default function App() {
           await signInAnonymously(auth);
         } catch (err: any) {
           console.error("Anonymous authentication failed:", err);
-          showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
+          const errorCode = err.code || "unknown";
+          const errorMessage = err.message || String(err);
+          
+          if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+            setAuthErrorModal({
+              isOpen: true,
+              code: errorCode,
+              message: errorMessage
+            });
+            showToast("Erro de domínio não autorizado no Firebase.", "error");
+          } else {
+            showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
+          }
         }
       }
       setAuthLoading(false);
@@ -155,7 +172,20 @@ export default function App() {
       }
     } catch (err: any) {
       console.error("Google sign in failed:", err);
-      showToast("Erro ao fazer login com Google.", "error");
+      const errorCode = err.code || "unknown";
+      const errorMessage = err.message || String(err);
+      
+      // Se for erro de domínio não autorizado ou erro de configuração, mostramos o modal explicativo
+      if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+        setAuthErrorModal({
+          isOpen: true,
+          code: errorCode,
+          message: errorMessage
+        });
+        showToast("Configuração pendente para o domínio personalizado.", "error");
+      } else {
+        showToast(`Erro ao fazer login com Google: ${errorCode}`, "error");
+      }
     } finally {
       setAuthLoading(false);
     }
@@ -274,8 +304,17 @@ export default function App() {
       return;
     }
     
-    const confirmed = window.confirm(`Deseja mesmo baixar e processar o arquivo "${fileName}" do seu Google Drive?`);
-    if (!confirmed) return;
+    const importedDate = checkFileAlreadyImported(fileName);
+    if (importedDate) {
+      const confirmed = window.confirm(
+        `⚠️ Atenção: O arquivo "${fileName}" já foi importado com sucesso anteriormente em ${importedDate}.\n\n` +
+        `Deseja realmente processá-lo e importá-lo novamente? (Isso pode gerar registros duplicados).`
+      );
+      if (!confirmed) return;
+    } else {
+      const confirmed = window.confirm(`Deseja mesmo baixar e processar o arquivo "${fileName}" do seu Google Drive?`);
+      if (!confirmed) return;
+    }
     
     const itemId = "drive-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
     const newItem: ImportSessionItem = {
@@ -288,6 +327,7 @@ export default function App() {
     };
     
     setImportSessionItems((prev) => [newItem, ...prev]);
+    setIsImportPanelOpen(true);
     await runItemClassification(newItem);
   };
 
@@ -322,6 +362,15 @@ export default function App() {
       const recRes = await fetch("/api/records", {
         headers: { Authorization: `Bearer ${token}` }
       });
+      if (recRes.status === 401) {
+        setAuthErrorModal({
+          isOpen: true,
+          code: "auth/unauthorized-token",
+          message: "Token de Autenticação não autorizado pelo Servidor Backend."
+        });
+        showToast("Erro de Autenticação (Token não autorizado).", "error");
+        throw new Error("HTTP 401 Unauthorized");
+      }
       if (!recRes.ok) throw new Error("HTTP " + recRes.status);
       
       const dbSource = recRes.headers.get("X-Database-Source");
@@ -334,23 +383,36 @@ export default function App() {
       const logRes = await fetch("/api/logs", {
         headers: { Authorization: `Bearer ${token}` }
       });
+      if (logRes.status === 401) {
+        setAuthErrorModal({
+          isOpen: true,
+          code: "auth/unauthorized-token",
+          message: "Token de Autenticação não autorizado pelo Servidor Backend."
+        });
+        showToast("Erro de Autenticação (Token não autorizado).", "error");
+        throw new Error("HTTP 401 Unauthorized");
+      }
       if (logRes.ok) {
         const logData = await logRes.json();
         setLogs(logData);
       }
     } catch (err: any) {
       console.error("Failed to fetch data:", err);
-      showToast("Falha de conexão com a base SQL.", "error");
+      if (err.message?.includes("401")) {
+        showToast("Acesso não autorizado. Verifique as configurações de domínio.", "error");
+      } else {
+        showToast("Falha de conexão com a base SQL.", "error");
+      }
     } finally {
       setDataLoading(false);
     }
   };
 
   // Sync state back to SQL Server (atomic ReplaceAll snapshot save)
-  const syncWithDatabase = async (updatedRecordsList: DBRecord[]) => {
+  const syncWithDatabase = async (updatedRecordsList: DBRecord[]): Promise<boolean> => {
     if (!token) {
       showToast("Você precisa estar autenticado para salvar alterações.", "error");
-      return;
+      return false;
     }
     setSyncing(true);
     try {
@@ -377,9 +439,11 @@ export default function App() {
         showToast("Dados sincronizados com o banco de dados SQL!", "success");
       }
       await fetchData(); // Reload to obtain updated logs and confirmed records
+      return true;
     } catch (err: any) {
       console.error("Sync failed:", err);
       showToast("Falha ao salvar no SQL: " + err.message, "error");
+      return false;
     } finally {
       setSyncing(false);
     }
@@ -533,6 +597,15 @@ export default function App() {
               fullText += `--- Página ${i} ---\n${pageText}\n`;
             }
             extractedText = fullText;
+
+            // Se o texto extraído for muito pequeno (menos de 50 caracteres), provavelmente é um PDF escaneado (imagens).
+            // Vamos usar o fallback base64 para permitir que o Gemini faça o OCR diretamente!
+            if (extractedText.trim().length < 50) {
+              console.log("Texto extraído muito curto. Usando fallback base64 para OCR multimodal no Gemini.");
+              fileBase64 = await fileToBase64(file);
+              mimeType = "application/pdf";
+              extractedText = ""; // limpa para priorizar base64
+            }
           } catch (pdfErr: any) {
             console.error("Erro ao extrair texto do PDF via pdfjs, usando fallback base64:", pdfErr);
             fileBase64 = await fileToBase64(file);
@@ -574,21 +647,57 @@ export default function App() {
       const resData = await response.json();
       if (resData.records && Array.isArray(resData.records)) {
         // Tag records with the importItemId so we can remove or re-import cleanly
-        setStagedRecords((prev) => {
-          const cleanPrev = prev.filter((r) => (r as any).importItemId !== item.id);
-          const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
-          return [...cleanPrev, ...taggedNew];
-        });
+        const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
 
-        // Update item status
-        setImportSessionItems((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
-              : i
-          )
-        );
-        showToast(`"${item.name}" processado com sucesso! ${resData.records.length} ações encontradas.`, "success");
+        if (autoSaveAfterImport) {
+          // Immediately sync with database
+          const combined = [...records, ...taggedNew];
+          setRecords(combined);
+
+          const success = await syncWithDatabase(combined);
+          if (success) {
+            setImportSessionItems((prev) =>
+              prev.map((i) =>
+                i.id === item.id
+                  ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                  : i
+              )
+            );
+            showToast(`"${item.name}" processado e gravado no banco SQL com sucesso!`, "success");
+          } else {
+            // Fail-safe fallback to manual staging
+            setStagedRecords((prevStaged) => {
+              const cleanPrev = prevStaged.filter((r) => (r as any).importItemId !== item.id);
+              return [...cleanPrev, ...taggedNew];
+            });
+            setIsImportPanelOpen(true);
+            setImportSessionItems((prev) =>
+              prev.map((i) =>
+                i.id === item.id
+                  ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                  : i
+              )
+            );
+            showToast(`O salvamento automático falhou para "${item.name}". Exibindo lote para gravação manual.`, "error");
+          }
+        } else {
+          // Normal manual preview mode
+          setStagedRecords((prevStaged) => {
+            const cleanPrev = prevStaged.filter((r) => (r as any).importItemId !== item.id);
+            return [...cleanPrev, ...taggedNew];
+          });
+          setIsImportPanelOpen(true);
+          // Update item status
+          setImportSessionItems((prev) =>
+            prev.map((i) =>
+              i.id === item.id
+                ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                : i
+            )
+          );
+          showToast(`"${item.name}" processado com sucesso! ${resData.records.length} ações encontradas.`, "success");
+          fetchData();
+        }
       } else {
         throw new Error("Nenhum registro pôde ser estruturado pela inteligência artificial.");
       }
@@ -625,6 +734,15 @@ export default function App() {
   };
 
   const processFileForClassification = async (file: File) => {
+    const importedDate = checkFileAlreadyImported(file.name);
+    if (importedDate) {
+      const confirmed = window.confirm(
+        `⚠️ Atenção: O arquivo "${file.name}" já foi importado com sucesso anteriormente em ${importedDate}.\n\n` +
+        `Deseja realmente processá-lo e importá-lo novamente? (Isso pode gerar registros duplicados).`
+      );
+      if (!confirmed) return;
+    }
+
     const itemId = "file-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
     const newItem: ImportSessionItem = {
       id: itemId,
@@ -635,6 +753,7 @@ export default function App() {
     };
     
     setImportSessionItems((prev) => [newItem, ...prev]);
+    setIsImportPanelOpen(true);
     await runItemClassification(newItem);
   };
 
@@ -656,6 +775,7 @@ export default function App() {
     setPastedText("");
     setIsPasteAreaOpen(false);
     setImportSessionItems((prev) => [newItem, ...prev]);
+    setIsImportPanelOpen(true);
     await runItemClassification(newItem);
   };
 
@@ -680,6 +800,40 @@ export default function App() {
     setIsModalOpen(true);
   };
 
+  const checkFileAlreadyImported = (filename: string): string | null => {
+    if (!filename) return null;
+    // Look for successful import of this filename in logs
+    const searchName = filename.replace(/^google drive:\s*/i, "").trim().toLowerCase();
+    if (!searchName || searchName === "texto colado") return null;
+
+    const match = logs.find(l => {
+      if (l.action !== "IMPORT_FILE" || l.status !== "SUCCESS" || !l.details) return false;
+      
+      // Ignore logs created in the current browser session to avoid marking active imports as already completed
+      const logTime = new Date(l.timestamp).getTime();
+      if (logTime >= sessionStartTime) return false;
+
+      const logDetails = l.details;
+      // The log detail format is: Processamento IA concluído para o arquivo '...'
+      const firstQuoteIdx = logDetails.indexOf("'");
+      const secondQuoteIdx = logDetails.indexOf("'", firstQuoteIdx + 1);
+      
+      if (firstQuoteIdx !== -1 && secondQuoteIdx !== -1) {
+        const loggedFilename = logDetails.substring(firstQuoteIdx + 1, secondQuoteIdx);
+        const cleanLoggedFilename = loggedFilename.replace(/^google drive:\s*/i, "").trim().toLowerCase();
+        if (cleanLoggedFilename === searchName) return true;
+      }
+      
+      // Fallback: check if the normalized log message contains searchName safely
+      const cleanLogDetails = logDetails.toLowerCase()
+        .replace("google drive: ", "")
+        .replace(/'/g, "")
+        .replace(/"/g, "");
+      return cleanLogDetails.includes(searchName);
+    });
+    return match ? formatDateString(match.timestamp?.split("T")[0]) : null;
+  };
+
   const checkDuplicate = (
     record: Partial<DBRecord>,
     existingList: DBRecord[],
@@ -687,30 +841,144 @@ export default function App() {
   ): DBRecord | null => {
     if (!record.deputado) return null;
     
-    const normalize = (str: string) => 
+    // Normalizador extremamente robusto para textos (remove acentos, pontuação, múltiplos espaços e caixa alta)
+    const normalizeText = (str: string) => 
       str.toLowerCase()
-         .replace(/[\s\r\n\t]+/g, " ")
+         .normalize("NFD")
+         .replace(/[\u0300-\u036f]/g, "") // Remove acentos
+         .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // Remove pontuação comum
+         .replace(/[\s\r\n\t]+/g, " ") // Simplifica múltiplos espaços
          .trim();
 
-    const rDeputado = normalize(record.deputado);
-    const rCidade = normalize(record.cidade || "");
-    const rData = record.data ? record.data.split("T")[0] : "";
-    const rRecursos = record.recursos ? Number(record.recursos) : 0;
+    // Normalizador de datas resiliente a formatos DD/MM/YYYY e YYYY-MM-DD
+    const normalizeDate = (dateStr: string) => {
+      if (!dateStr) return "";
+      const clean = dateStr.trim().split("T")[0]; // Remove parte de tempo se houver
+      
+      // Match DD/MM/YYYY ou DD-MM-YYYY
+      const dmyMatch = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (dmyMatch) {
+        const day = dmyMatch[1].padStart(2, "0");
+        const month = dmyMatch[2].padStart(2, "0");
+        const year = dmyMatch[3];
+        return `${year}-${month}-${day}`;
+      }
+      return clean;
+    };
+
+    // Analisador extremamente resiliente de recursos financeiros (R$ 4,5 milhões, R$ 230 mil, 4500000.00, etc.)
+    const parseRecursos = (val: any): number => {
+      if (val === undefined || val === null) return 0;
+      let str = String(val).trim().toLowerCase();
+      if (!str || str === "0") return 0;
+      
+      // Se contém multiplicadores em português ou abreviações
+      if (str.includes("milh") || (str.includes("m") && str.match(/\d\s*m/))) {
+        const numPart = str.replace(/[^\d,.]/g, "").replace(",", ".");
+        const parsed = parseFloat(numPart);
+        if (!isNaN(parsed)) return parsed * 1000000;
+      }
+      if (str.includes("mil") || (str.includes("k") && str.match(/\d\s*k/))) {
+        const numPart = str.replace(/[^\d,.]/g, "").replace(",", ".");
+        const parsed = parseFloat(numPart);
+        if (!isNaN(parsed)) return parsed * 1000;
+      }
+
+      let clean = str.replace(/[rR]\$\s*/g, "").trim();
+      
+      if (clean.includes(",") && clean.includes(".")) {
+        if (clean.indexOf(".") < clean.indexOf(",")) {
+          clean = clean.replace(/\./g, "").replace(",", ".");
+        } else {
+          clean = clean.replace(/,/g, "");
+        }
+      } else if (clean.includes(",")) {
+        const parts = clean.split(",");
+        if (parts[parts.length - 1].length === 2) {
+          clean = clean.replace(/,/g, ".");
+        } else {
+          clean = clean.replace(/,/g, "");
+        }
+      }
+      
+      const res = parseFloat(clean.replace(/[^\d.]/g, ""));
+      return isNaN(res) ? 0 : res;
+    };
+
+    // Computa Jaccard index de palavras entre duas strings de ação do deputado para lidar com paráfrases da IA
+    const getWordOverlap = (s1: string, s2: string): number => {
+      const norm1 = normalizeText(s1);
+      const norm2 = normalizeText(s2);
+      
+      // Stopwords comuns em português que não agregam valor semântico na comparação
+      const stopwords = new Set([
+        "a", "o", "as", "os", "ao", "aos", "de", "do", "da", "dos", "das", 
+        "em", "no", "na", "nos", "nas", "para", "por", "com", "um", "uma", 
+        "uns", "umas", "e", "que", "se", "ou", "foi", "foram", "pelo", "pela"
+      ]);
+      
+      const words1 = norm1.split(" ").filter(w => w.length > 2 && !stopwords.has(w));
+      const words2 = norm2.split(" ").filter(w => w.length > 2 && !stopwords.has(w));
+      
+      if (words1.length === 0 || words2.length === 0) return 0;
+      
+      const set1 = new Set(words1);
+      const set2 = new Set(words2);
+      
+      let intersectCount = 0;
+      set1.forEach(w => {
+        if (set2.has(w)) {
+          intersectCount++;
+        }
+      });
+      
+      const unionCount = set1.size + set2.size - intersectCount;
+      return intersectCount / unionCount;
+    };
+
+    const rDeputado = normalizeText(record.deputado);
+    const rCidade = normalizeText(record.cidade || "");
+    const rData = normalizeDate(record.data || "");
+    const rRecursos = parseRecursos(record.recursos);
     
     for (const item of existingList) {
       if (ignoreId && item.id === ignoreId) continue;
       
-      const itemDeputado = normalize(item.deputado || "");
-      const itemCidade = normalize(item.cidade || "");
-      const itemData = item.data ? item.data.split("T")[0] : "";
-      const itemRecursos = item.recursos ? Number(item.recursos) : 0;
+      const itemDeputado = normalizeText(item.deputado || "");
+      const itemCidade = normalizeText(item.cidade || "");
+      const itemData = normalizeDate(item.data || "");
+      const itemRecursos = parseRecursos(item.recursos);
       
-      const isSameDeputado = rDeputado === itemDeputado;
       const isSameCidade = rCidade === itemCidade;
       const isSameData = rData === itemData;
       const isSameRecursos = rRecursos === itemRecursos;
       
-      if (isSameDeputado && isSameCidade && isSameData && isSameRecursos) {
+      // 1. Caso idêntico
+      if (rDeputado === itemDeputado) {
+        return item;
+      }
+
+      // Calcula similaridade semântica de palavras
+      const overlap = getWordOverlap(record.deputado, item.deputado || "");
+
+      // 2. Similaridade de texto extremamente alta (paráfrase direta da IA)
+      if (overlap >= 0.80) {
+        return item;
+      }
+
+      // 3. Mesma cidade, mesma data, mesmos recursos (> 0) E similaridade razoável de texto (>= 40%)
+      if (isSameCidade && isSameData && isSameRecursos && rRecursos > 0 && overlap >= 0.40) {
+        return item;
+      }
+      
+      // 4. Mesma cidade, mesma data, ambos sem recursos (R$ 0) E similaridade alta de texto (>= 60%)
+      // Isso evita que ações diferentes (ex: reuniões, audiências e visitas) na mesma cidade e no mesmo dia sejam tratadas como duplicadas.
+      if (isSameCidade && isSameData && rRecursos === 0 && itemRecursos === 0 && overlap >= 0.60) {
+        return item;
+      }
+      
+      // 5. Mesma cidade, mesmos recursos (> 0) E similaridade muito alta de texto (>= 70%) mesmo com datas ligeiramente diferentes
+      if (isSameCidade && isSameRecursos && rRecursos > 0 && overlap >= 0.70) {
         return item;
       }
     }
@@ -830,11 +1098,14 @@ export default function App() {
 
     // We append staged records to current list
     const combined = [...records, ...stagedRecords];
-    setRecords(combined);
-    setStagedRecords([]);
-    setImportSessionItems([]);
-    setIsImportPanelOpen(false);
-    await syncWithDatabase(combined);
+    
+    const success = await syncWithDatabase(combined);
+    if (success) {
+      setRecords(combined);
+      setStagedRecords([]);
+      setImportSessionItems([]);
+      setIsImportPanelOpen(false);
+    }
   };
 
   // Clear staged preview
@@ -1298,17 +1569,31 @@ export default function App() {
               className="bg-slate-900 text-slate-100 p-6 rounded-xl shadow-xl border-l-4 border-blue-500 space-y-6"
             >
               <div className="flex justify-between items-start">
-                <div>
+                <div className="flex-1 min-w-0">
                   <h3 className="font-sans text-lg font-bold tracking-tight text-blue-400 uppercase">
                     Importação com Classificação Inteligente por Inteligência Artificial
                   </h3>
                   <p className="text-slate-400 text-xs mt-1">
                     Arraste ou carregue um arquivo (PDF, Excel, Word, CSV) ou cole um texto livre. Nosso sistema extrai as informações e o Gemini 3.5 Flash faz o mapeamento estruturado de campos e setores políticos de Santa Catarina.
                   </p>
+
+                  {/* Auto-Save Toggle */}
+                  <div className="mt-3 flex items-center gap-2 bg-slate-950/40 border border-slate-800/80 px-3 py-1.5 rounded-lg w-fit">
+                    <input
+                      type="checkbox"
+                      id="autoSaveAfterImport"
+                      checked={autoSaveAfterImport}
+                      onChange={(e) => setAutoSaveAfterImport(e.target.checked)}
+                      className="rounded border-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-slate-900 h-3.5 w-3.5 bg-slate-900 cursor-pointer"
+                    />
+                    <label htmlFor="autoSaveAfterImport" className="text-[10px] font-semibold text-slate-300 cursor-pointer select-none">
+                      ⚡ Salvar automaticamente no banco SQL após extração do Gemini
+                    </label>
+                  </div>
                 </div>
                 <button 
                   onClick={() => { setIsImportPanelOpen(false); setStagedRecords([]); setImportSessionItems([]); }}
-                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+                  className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 shrink-0 ml-4"
                 >
                   <X size={18} />
                 </button>
@@ -1449,19 +1734,33 @@ export default function App() {
                         ) : (
                           driveFiles
                             .filter(f => f.name.toLowerCase().includes(driveSearch.toLowerCase()))
-                            .map(f => (
-                              <button
-                                key={f.id}
-                                onClick={() => handleImportFromDrive(f.id, f.name, f.mimeType)}
-                                className="w-full text-left bg-slate-950/40 hover:bg-emerald-950/20 border border-slate-800/80 hover:border-emerald-700/50 rounded p-1 transition-all flex items-center gap-1.5 group"
-                              >
-                                <Folder size={11} className="text-emerald-500 shrink-0" />
-                                <div className="truncate flex-1">
-                                  <p className="text-[9px] font-medium text-slate-300 truncate group-hover:text-emerald-300">{f.name}</p>
-                                  <p className="text-[8px] text-slate-500">Modificado: {new Date(f.modifiedTime).toLocaleDateString("pt-BR")}</p>
-                                </div>
-                              </button>
-                            ))
+                            .map(f => {
+                              const alreadyImported = checkFileAlreadyImported(f.name);
+                              return (
+                                <button
+                                  key={f.id}
+                                  onClick={() => handleImportFromDrive(f.id, f.name, f.mimeType)}
+                                  className={`w-full text-left border rounded p-1 transition-all flex items-center gap-1.5 group ${
+                                    alreadyImported 
+                                      ? "bg-amber-950/10 hover:bg-amber-950/20 border-amber-800/40 hover:border-amber-700/50" 
+                                      : "bg-slate-950/40 hover:bg-emerald-950/20 border-slate-800/80 hover:border-emerald-700/50"
+                                  }`}
+                                >
+                                  <Folder size={11} className={`${alreadyImported ? "text-amber-500" : "text-emerald-500"} shrink-0`} />
+                                  <div className="truncate flex-1">
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <p className="text-[9px] font-medium text-slate-300 truncate group-hover:text-emerald-300 flex-1">{f.name}</p>
+                                      {alreadyImported && (
+                                        <span className="text-[7.5px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 px-1 rounded shrink-0" title={`Já importado em ${alreadyImported}`}>
+                                          ⚠️ Já salvo
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[8px] text-slate-500">Modificado: {new Date(f.modifiedTime).toLocaleDateString("pt-BR")}</p>
+                                  </div>
+                                </button>
+                              );
+                            })
                         )}
                       </div>
                     </div>
@@ -1489,6 +1788,7 @@ export default function App() {
                       const isPending = item.status === "pending";
                       const isSuccess = item.status === "success";
                       const isFailed = item.status === "failed";
+                      const alreadyImportedDate = checkFileAlreadyImported(item.name);
                       
                       return (
                         <div key={item.id} className="pt-2 pb-1 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs group">
@@ -1496,12 +1796,23 @@ export default function App() {
                             {/* Icon based on status or type */}
                             <div className="mt-1 shrink-0">
                               {isPending && <Loader2 size={16} className="animate-spin text-blue-400" />}
-                              {isSuccess && <CheckCircle2 size={16} className="text-emerald-500" />}
+                              {isSuccess && (
+                                alreadyImportedDate 
+                                  ? <AlertTriangle size={16} className="text-amber-500 animate-pulse" /> 
+                                  : <CheckCircle2 size={16} className="text-emerald-500" />
+                              )}
                               {isFailed && <AlertTriangle size={16} className="text-red-500" />}
                             </div>
                             
                             <div className="min-w-0 flex-1">
-                              <p className="font-bold text-slate-200 truncate" title={item.name}>{item.name}</p>
+                              <p className="font-bold text-slate-200 truncate flex flex-wrap items-center gap-2" title={item.name}>
+                                <span>{item.name}</span>
+                                {alreadyImportedDate && (
+                                  <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[9px] font-extrabold px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
+                                    <AlertTriangle size={10} /> JÁ PROCESSADO & SALVO ({alreadyImportedDate})
+                                  </span>
+                                )}
+                              </p>
                               {isPending && (
                                 <p className="text-[10px] text-blue-400 flex items-center gap-1 mt-0.5 animate-pulse">
                                   <span>Extraindo conteúdo e estruturando dados com Gemini 3.5...</span>
@@ -1597,8 +1908,36 @@ export default function App() {
               {/* Staged Records (Preview before database sync) */}
               {stagedRecords.length > 0 && (() => {
                 const duplicatesCount = stagedRecords.filter((r, idx) => getStagedRecordStatus(r, idx).isDuplicate).length;
+                
+                // Check if any of the source files have already been imported in the past
+                const sourceItemIds = Array.from(new Set(stagedRecords.map((r: any) => r.importItemId).filter(Boolean)));
+                const alreadyImportedSources = sourceItemIds.map(id => {
+                  const item = importSessionItems.find(i => i.id === id);
+                  if (!item) return null;
+                  const importedDate = checkFileAlreadyImported(item.name);
+                  return importedDate ? { name: item.name, date: importedDate } : null;
+                }).filter(Boolean) as { name: string; date: string }[];
+
                 return (
                   <div className="space-y-4 pt-4 border-t border-slate-800 animate-fadeIn">
+                    
+                    {alreadyImportedSources.length > 0 && (
+                      <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs flex flex-col gap-2 animate-fadeIn leading-relaxed">
+                        {alreadyImportedSources.map((source, sIdx) => (
+                          <div key={sIdx} className="flex items-start gap-2.5">
+                            <span className="text-base shrink-0">⚠️</span>
+                            <div>
+                              <p className="font-bold text-amber-200">Sinal de Alerta: Arquivo Original Já Processado Anteriormente</p>
+                              <p className="text-slate-400 text-[11px] mt-0.5">
+                                O arquivo <span className="text-slate-100 font-semibold select-all">"{source.name}"</span> já foi processado e seus dados foram extraídos e salvos no banco de dados em <span className="text-amber-400 font-bold">{source.date}</span>. 
+                                Se você salvar estes registros novamente, poderá criar dados duplicados na base de dados ativa.
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                       <div>
                         <h4 className="text-xs font-bold uppercase tracking-wider text-blue-400 flex items-center gap-2">
@@ -2210,14 +2549,14 @@ export default function App() {
                 <div className="overflow-x-auto scrollbar-thin">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200">
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Setor</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Data</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Ação do Deputado</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Município</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">PL / Emenda</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px] text-right">Verbas</th>
-                        <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status</th>
+                      <tr className="bg-slate-50/75 border-b border-slate-200">
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[12%] min-w-[110px]">Setor</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[90px]">Data</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[50%] min-w-[450px]">Ação do Deputado</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[100px]">Município</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[100px]">PL / Emenda</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] text-right w-[10%] min-w-[100px]">Verbas</th>
+                        <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[8%] min-w-[90px]">Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2227,20 +2566,20 @@ export default function App() {
                         .map((r) => {
                           const s = getSectorById(r.sector);
                           return (
-                            <tr key={r.id} className="hover:bg-slate-50/50">
-                              <td className="p-3 whitespace-nowrap">
+                            <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                              <td className="py-4 px-4 whitespace-nowrap">
                                 <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-700">
                                   {s?.icon} {s?.name || r.sector}
                                 </span>
                               </td>
-                              <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[11px]">{formatDateString(r.data)}</td>
-                              <td className="p-3 max-w-sm text-slate-800 font-medium leading-relaxed">{r.deputado}</td>
-                              <td className="p-3 whitespace-nowrap text-slate-600">{r.cidade || "—"}</td>
-                              <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10px]">
+                              <td className="py-4 px-4 whitespace-nowrap text-slate-500 font-mono text-[11px]">{formatDateString(r.data)}</td>
+                              <td className="py-4 px-4 max-w-2xl text-slate-800 text-[13px] font-medium leading-relaxed tracking-normal">{r.deputado}</td>
+                              <td className="py-4 px-4 whitespace-nowrap text-slate-600">{r.cidade || "—"}</td>
+                              <td className="py-4 px-4 whitespace-nowrap text-slate-500 font-mono text-[10px]">
                                 {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
                               </td>
-                              <td className="p-3 text-right text-slate-900 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
-                              <td className="p-3 whitespace-nowrap">
+                              <td className="py-4 px-4 text-right text-slate-900 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
+                              <td className="py-4 px-4 whitespace-nowrap">
                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
                                   {r.status}
                                 </span>
@@ -2441,34 +2780,34 @@ export default function App() {
                   <div className="overflow-x-auto scrollbar-thin">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200">
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Data</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Ação do Deputado</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Município</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">PL / Emenda</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px] text-right">Verbas</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Status</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px]">Obs.</th>
-                          <th className="p-3 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-20"></th>
+                        <tr className="bg-slate-50/75 border-b border-slate-200">
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[90px]">Data</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[46%] min-w-[450px]">Ação do Deputado</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[100px]">Município</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[10%] min-w-[100px]">PL / Emenda</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] text-right w-[10%] min-w-[100px]">Verbas</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[8%] min-w-[90px]">Status</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[12%] min-w-[110px]">Obs.</th>
+                          <th className="py-3.5 px-4 text-slate-500 font-bold uppercase tracking-wider text-[10px] w-[4%] min-w-[60px]"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredList.map((r) => (
-                          <tr key={r.id} className="hover:bg-slate-50/50">
-                            <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[11px]">{formatDateString(r.data)}</td>
-                            <td className="p-3 max-w-sm text-slate-800 font-medium leading-relaxed">{r.deputado}</td>
-                            <td className="p-3 whitespace-nowrap text-slate-600 font-semibold">{r.cidade || "—"}</td>
-                            <td className="p-3 whitespace-nowrap text-slate-500 font-mono text-[10px]">
+                          <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="py-4 px-4 whitespace-nowrap text-slate-500 font-mono text-[11px]">{formatDateString(r.data)}</td>
+                            <td className="py-4 px-4 max-w-2xl text-slate-800 text-[13px] font-medium leading-relaxed tracking-normal">{r.deputado}</td>
+                            <td className="py-4 px-4 whitespace-nowrap text-slate-600 font-semibold">{r.cidade || "—"}</td>
+                            <td className="py-4 px-4 whitespace-nowrap text-slate-500 font-mono text-[10px]">
                               {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
                             </td>
-                            <td className="p-3 text-right text-slate-900 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
-                            <td className="p-3 whitespace-nowrap">
+                            <td className="py-4 px-4 text-right text-slate-900 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
+                            <td className="py-4 px-4 whitespace-nowrap">
                               <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
                                 {r.status}
                               </span>
                             </td>
-                            <td className="p-3 max-w-[120px] truncate text-slate-500 italic" title={r.observacoes}>{r.observacoes || "—"}</td>
-                            <td className="p-3 whitespace-nowrap">
+                            <td className="py-4 px-4 max-w-[120px] truncate text-slate-500 italic" title={r.observacoes}>{r.observacoes || "—"}</td>
+                            <td className="py-4 px-4 whitespace-nowrap">
                               <div className="flex items-center gap-1.5 justify-end">
                                 <button 
                                   onClick={() => handleOpenEditModal(r)}
@@ -2662,6 +3001,91 @@ export default function App() {
         </div>
       )}
 
+      {/* ==========================================
+          GOOGLE AUTH DOMAIN WARNING MODAL
+         ========================================== */}
+      {authErrorModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-slate-900 text-slate-100 rounded-xl shadow-2xl border border-slate-800 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-800 bg-slate-950 flex justify-between items-center">
+              <h3 className="font-sans text-sm font-bold text-amber-400 tracking-tight flex items-center gap-2">
+                <svg className="w-4 h-4 text-amber-500 animate-pulse shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                Configuração Necessária: Google Auth no Domínio Personalizado
+              </h3>
+              <button onClick={() => setAuthErrorModal(null)} className="text-slate-400 hover:text-slate-200">
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto text-xs space-y-4 leading-relaxed">
+              <p className="text-slate-300">
+                O login com o Google falhou porque você está acessando o sistema através de um domínio personalizado (<span className="text-emerald-400 font-bold">matrizmvpsdb.mastervisionmarketing.com</span>) que ainda não foi autorizado no seu projeto do Firebase e Google Cloud.
+              </p>
+
+              <div className="bg-slate-950/50 border border-amber-500/20 rounded-lg p-3.5 space-y-2">
+                <p className="font-bold text-amber-400">Mensagem Técnica do Erro:</p>
+                <code className="block font-mono text-[10px] text-red-300 bg-red-950/20 p-2 rounded border border-red-900/30 break-all select-all">
+                  [{authErrorModal.code}] {authErrorModal.message}
+                </code>
+              </div>
+
+              <div className="space-y-3 text-[11px]">
+                <h4 className="font-bold text-slate-200 text-xs border-b border-slate-800 pb-1">Siga estes passos rápidos no painel para resolver:</h4>
+                
+                <div className="space-y-1">
+                  <p className="font-bold text-blue-400">1. No Console do Firebase:</p>
+                  <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                    <li>Acesse o <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Console do Firebase ↗</a> e abra o projeto <code className="bg-slate-800 px-1 rounded select-all">gen-lang-client-0337601108</code>.</li>
+                    <li>No menu lateral, vá em <span className="font-semibold text-slate-100">Authentication</span> &gt; aba <span className="font-semibold text-slate-100">Settings</span> (Configurações).</li>
+                    <li>Na seção <span className="font-semibold text-slate-100">Authorized domains</span> (Domínios autorizados), clique em <span className="font-semibold text-blue-400">Add domain</span> (Adicionar domínio).</li>
+                    <li>Digite exatamente: <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400 font-mono font-bold select-all">matrizmvpsdb.mastervisionmarketing.com</code> e salve.</li>
+                  </ul>
+                </div>
+
+                <div className="space-y-1">
+                  <p className="font-bold text-blue-400">2. No Google Cloud Console (Para liberar a API do Google):</p>
+                  <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                    <li>Acesse o <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Google Cloud Console ↗</a> com a mesma conta.</li>
+                    <li>Vá no menu lateral esquerdo em <span className="font-semibold text-slate-100">APIs & Services</span> &gt; <span className="font-semibold text-slate-100">Credentials</span>.</li>
+                    <li>Em <span className="font-semibold text-slate-100">OAuth 2.0 Client IDs</span>, edite o cliente web principal do seu aplicativo.</li>
+                    <li>Em <span className="font-semibold text-slate-100">Authorized JavaScript origins</span>, adicione este endereço:
+                      <br />
+                      <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400 font-mono font-bold select-all">https://matrizmvpsdb.mastervisionmarketing.com</code>
+                    </li>
+                    <li>Em <span className="font-semibold text-slate-100">Authorized redirect URIs</span>, adicione este link de retorno de callback:
+                      <br />
+                      <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400 font-mono font-bold select-all">https://matrizmvpsdb.mastervisionmarketing.com/__/auth/handler</code>
+                    </li>
+                    <li>Salve as alterações no final da página.</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="bg-blue-950/20 border border-blue-900/30 rounded-lg p-3 text-slate-400 text-[10px]">
+                <strong className="text-blue-400">Tempo de espera:</strong> As configurações do Google Cloud podem levar de <span className="text-white">5 a 10 minutos</span> para propagar e o login voltar a funcionar no seu domínio personalizado.
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-800 bg-slate-950 flex justify-end">
+              <button 
+                onClick={() => setAuthErrorModal(null)} 
+                className="py-2 px-5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-colors cursor-pointer"
+              >
+                Concluí a configuração, fechar
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
 
 
     </div>

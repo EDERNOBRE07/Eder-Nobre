@@ -12,6 +12,7 @@ export const SECTORS: Sector[] = [
   { id: 'fiscal', name: 'Fiscal', color: '#F57F17', icon: '💰' },
   { id: 'comercio', name: 'Comércio', color: '#00695C', icon: '🏪' },
   { id: 'tecnologia', name: 'Tecnologia', color: '#283593', icon: '💻' },
+  { id: 'cidadao', name: 'Títulos de Cidadão Honorário', color: '#C5A059', icon: '🎖️' },
 ];
 
 export function getSectorById(id: string): Sector | undefined {

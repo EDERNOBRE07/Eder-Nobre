@@ -300,7 +300,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
           email
         );
 
-        res.json({ success: true, count: formattedRecords.length, database: "local-json" });
+        res.json({ success: true, count: formattedRecords.length, database: "local-json", local: true });
       }
     }
   } catch (error: any) {
@@ -382,7 +382,7 @@ app.post("/api/records/classify", requireAuth, async (req: AuthRequest, res) => 
           id: { type: Type.STRING, description: "Gere um ID único de 10 caracteres alfanuméricos" },
           sector: { 
             type: Type.STRING, 
-            description: "Classifique estritamente em um dos seguintes setores: 'educacao', 'saude', 'seguranca', 'infra', 'cultura', 'meio', 'social', 'agro', 'fiscal', 'comercio', 'tecnologia'" 
+            description: "Classifique estritamente em um dos seguintes setores: 'educacao' (Educação), 'saude' (Saúde), 'seguranca' (Segurança), 'infra' (Infraestrutura/Obras), 'cultura' (Cultura/Esporte/Lazer), 'meio' (Meio Ambiente/Saneamento), 'social' (Assistência/Causa Social), 'agro' (Agricultura/Pesca), 'fiscal' (Administração Pública, Gestão de Projetos, Gestão do Estado, Orçamento, Economia, Finanças), 'comercio' (Comércio/Indústria/Turismo), 'tecnologia' (Tecnologia/Inovação), 'cidadao' (Títulos de Cidadão Honorário, homenagens, medalhas, comendas e sessões solenes). ATENÇÃO: Atuação em Secretarias de Estado (como Administração), gestão de projetos públicos gerais e relatórios governamentais pertencem a 'fiscal' ou 'infra', NUNCA a 'cidadao'!" 
           },
           data: { type: Type.STRING, description: "A data da ocorrência da ação no formato YYYY-MM-DD. Se ausente, deduza com base no texto ou use a data atual" },
           deputado: { type: Type.STRING, description: "Resumo claro e completo da ação legislativa do deputado" },
@@ -434,7 +434,8 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       extractedRecords = JSON.parse(aiResponseText);
     } else {
       // Text payload - Chunk to prevent exceeding Free Tier's TPM and RPM constraints
-      const chunks = chunkText(text, 120000);
+      // Reduced chunk size to 15,000 chars to avoid Gemini output token truncation (max 8,192 output tokens)
+      const chunks = chunkText(text, 15000);
       console.log(`[Gemini API] Split input text into ${chunks.length} chunk(s) to respect free-tier TPM limit.`);
 
       for (let i = 0; i < chunks.length; i++) {

@@ -13,7 +13,10 @@ export const createPool = () => {
     password: process.env.SQL_PASSWORD,
     database: process.env.SQL_DB_NAME,
     connectionTimeoutMillis: 15000,
-    ssl: isLocal ? undefined : { rejectUnauthorized: false }
+    idleTimeoutMillis: 10000, // Fecha conexões ociosas após 10 segundos para evitar conexões quebradas/zumbis
+    max: 10,                 // Máximo de clientes ativos no pool
+    keepAlive: true,         // Envia pacotes TCP keep-alive para evitar desconexão abrupta pelo servidor/firewall
+    ssl: false
   });
 };
 
