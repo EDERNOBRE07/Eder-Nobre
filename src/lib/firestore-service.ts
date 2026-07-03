@@ -5,6 +5,15 @@ import * as path from "path";
 const RECORDS_FILE = path.join(process.cwd(), "records-store.json");
 const LOGS_FILE = path.join(process.cwd(), "logs-store.json");
 
+// Detect if we are in Google Cloud and there is an active PostgreSQL Cloud SQL instance socket
+const cloudSqlHost = process.env.SQL_HOST;
+const isGoogleCloudPostgres = !!(cloudSqlHost && (
+  cloudSqlHost.startsWith('/app/cloudsql') || 
+  cloudSqlHost.startsWith('/cloudsql') ||
+  fs.existsSync(`${cloudSqlHost}/.s.PGSQL.5432`)
+));
+const isMySQL = !isGoogleCloudPostgres && (process.env.SQL_ENGINE !== 'postgres');
+
 // Helper to read local JSON files
 function readLocalRecords(): any[] {
   if (!fs.existsSync(RECORDS_FILE)) return [];
@@ -196,17 +205,18 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
       console.error("[Recovery System] Error writing recovery data to Firestore:", fsErr.message || fsErr);
     }
 
-    // 2. Recover to PostgreSQL if active
+    // 2. Recover to SQL Database if active
     if (dbPostgres) {
+      const dbEngineName = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
       try {
         const pgRecords = await dbPostgres.select().from(recordsTable);
         const pgIds = new Set(pgRecords.map((r: any) => r.id));
         
-        // Filtra registros locais que ainda não estão salvos no PostgreSQL
+        // Filtra registros locais que ainda não estão salvos no SQL
         const toRecoverPg = localRecs.filter(r => !pgIds.has(r.id));
         
         if (toRecoverPg.length > 0) {
-          console.log(`[Recovery System] Recovering ${toRecoverPg.length} local records to PostgreSQL...`);
+          console.log(`[Recovery System] Recovering ${toRecoverPg.length} local records to ${dbEngineName}...`);
           
           const formatted = toRecoverPg.map((r: any) => ({
             id: r.id || Math.random().toString(36).slice(2, 9),
@@ -227,32 +237,33 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
             await dbPostgres.insert(recordsTable).values(batch);
           }
           recoveredToPgCount = formatted.length;
-          console.log(`[Recovery System] ${formatted.length} local records successfully imported to PostgreSQL.`);
+          console.log(`[Recovery System] ${formatted.length} local records successfully imported to ${dbEngineName}.`);
 
-          // Log de recuperação no PostgreSQL
+          // Log de recuperação no banco SQL
           await dbPostgres.insert(logsTable).values({
             action: "RECOVERY",
             status: "SUCCESS",
-            details: `Recuperação automática de dados locais para PostgreSQL concluída. Importados: ${formatted.length} novos registros mesclados.`,
+            details: `Recuperação automática de dados locais para o banco ${dbEngineName} concluída. Importados: ${formatted.length} novos registros mesclados.`,
             userEmail: "system-recovery",
           });
         } else {
-          console.log("[Recovery System] All local records already exist in PostgreSQL database.");
+          console.log(`[Recovery System] All local records already exist in ${dbEngineName} database.`);
         }
       } catch (pgErr: any) {
-        console.log("[Recovery System] PostgreSQL recovery skipped or failed:", pgErr.message || pgErr);
+        console.log(`[Recovery System] ${dbEngineName} recovery skipped or failed:`, pgErr.message || pgErr);
       }
     }
 
-    // 3. Recover Local Logs if any to PostgreSQL
+    // 3. Recover Local Logs if any to SQL Database
     if (dbPostgres && localLogs.length > 0) {
+      const dbEngineName = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
       try {
         const pgLogs = await dbPostgres.select().from(logsTable).limit(200);
         const pgLogKeys = new Set(pgLogs.map((l: any) => `${l.action}_${l.timestamp}_${l.userEmail}`));
         const toRecoverLogs = localLogs.filter(l => !pgLogKeys.has(`${l.action}_${l.timestamp}_${l.userEmail}`));
         
         if (toRecoverLogs.length > 0) {
-          console.log(`[Recovery System] Recovering ${toRecoverLogs.length} local logs to PostgreSQL...`);
+          console.log(`[Recovery System] Recovering ${toRecoverLogs.length} local logs to ${dbEngineName}...`);
           const formattedLogs = toRecoverLogs.map((l: any) => ({
             timestamp: l.timestamp ? new Date(l.timestamp) : new Date(),
             action: l.action || "MANUAL",
@@ -266,10 +277,10 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
             const batch = formattedLogs.slice(i, i + batchSize);
             await dbPostgres.insert(logsTable).values(batch);
           }
-          console.log("[Recovery System] Local logs successfully imported to PostgreSQL.");
+          console.log(`[Recovery System] Local logs successfully imported to ${dbEngineName}.`);
         }
       } catch (logPgErr: any) {
-        console.log("[Recovery System] PostgreSQL logs recovery skipped or failed:", logPgErr.message || logPgErr);
+        console.log(`[Recovery System] ${dbEngineName} logs recovery skipped or failed:`, logPgErr.message || logPgErr);
       }
     }
 
