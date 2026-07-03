@@ -9,7 +9,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 // Initialize DB pool and connection
-import { db, bootstrapDb } from "./src/db/index.ts";
+import { db, bootstrapDb, pool } from "./src/db/index.ts";
 import { records, executionLogs } from "./src/db/schema.ts";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { desc } from "drizzle-orm";
@@ -90,14 +90,22 @@ app.use(express.json({ limit: "20mb" }));
 
 // Initialize Gemini SDK dynamically to avoid cached key issues
 function getGeminiClient(req?: express.Request): GoogleGenAI {
-  let key = (req?.headers["x-gemini-api-key"] as string) || process.env.GEMINI_API_KEY;
+  let key = req?.headers["x-gemini-api-key"] as string;
+  
+  // If the header key is missing, empty, or literally "null"/"undefined", fallback to env
+  if (!key || key.trim() === "" || key === "null" || key === "undefined") {
+    key = process.env.GEMINI_API_KEY || "";
+  }
+  
   if (key) {
     key = key.trim();
   }
-  // If no environment API key is configured, throw an error
+  
+  // If no API key is available, throw an error
   if (!key || key === "") {
-    throw new Error("GEMINI_API_KEY environment variable is missing. Please set your API key in the application settings.");
+    throw new Error("A variável de ambiente GEMINI_API_KEY está ausente no servidor e nenhuma chave customizada foi inserida no menu de Configurações.");
   }
+  
   console.log(`[Gemini Client] Initializing client. Key ends in: ...${key.slice(-6)}`);
   return new GoogleGenAI({
     apiKey: key,
@@ -193,6 +201,70 @@ app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
       res.setHeader("X-Database-Source", "fallback-local");
       res.json(sortedLogs);
     }
+  }
+});
+
+// GET database connection status and config (Secured)
+app.get("/api/db-status", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT 1");
+      res.json({
+        connected: true,
+        host: process.env.SQL_HOST || "não configurado",
+        database: process.env.SQL_DB_NAME || "não configurado",
+        user: process.env.SQL_USER || "não configurado",
+        port: process.env.SQL_PORT || "5432",
+        ssl: process.env.SQL_SSL || "false",
+        error: null
+      });
+    } finally {
+      client.release();
+    }
+  } catch (err: any) {
+    res.json({
+      connected: false,
+      host: process.env.SQL_HOST || "não configurado",
+      database: process.env.SQL_DB_NAME || "não configurado",
+      user: process.env.SQL_USER || "não configurado",
+      port: process.env.SQL_PORT || "5432",
+      ssl: process.env.SQL_SSL || "false",
+      error: err.message || String(err)
+    });
+  }
+});
+
+// GET Gemini API key validation status (Secured)
+app.get("/api/gemini-status", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ai = getGeminiClient(req);
+    // Execute a simple connection test call using gemini-3.5-flash
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: "Test connection. Respond only with 'OK'."
+    });
+    
+    if (response.text) {
+      const isCustom = !!(req.headers["x-gemini-api-key"] && String(req.headers["x-gemini-api-key"]).trim() !== "");
+      res.json({
+        valid: true,
+        source: isCustom ? "Chave de API personalizada do usuário (Configurações Locais)" : "Chave de API padrão do servidor (Variável de Ambiente)",
+        error: null
+      });
+    } else {
+      res.json({
+        valid: false,
+        source: req.headers["x-gemini-api-key"] ? "Chave de API personalizada do usuário" : "Chave de API padrão do servidor",
+        error: "Resposta vazia retornada do modelo Gemini."
+      });
+    }
+  } catch (err: any) {
+    res.json({
+      valid: false,
+      source: req.headers["x-gemini-api-key"] ? "Chave de API personalizada do usuário" : "Chave de API padrão do servidor",
+      error: err.message || String(err)
+    });
   }
 });
 
@@ -403,7 +475,7 @@ app.post("/api/records/classify", requireAuth, async (req: AuthRequest, res) => 
     if (fileBase64 && mimeType) {
       // File payload (e.g., PDF) - Process in a single request as we can't easily chunk binary on the server
       const response = await generateContentWithRetry(ai, {
-        model: "gemini-2.5-flash",
+        model: "gemini-3.5-flash",
         contents: {
           parts: [
             {
@@ -450,7 +522,7 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
         }
 
         const response = await generateContentWithRetry(ai, {
-          model: "gemini-2.5-flash",
+          model: "gemini-3.5-flash",
           contents: `
 Você é uma inteligência artificial especialista na análise, estruturação e classificação de diários oficiais, notícias, emendas e relatórios de atividades políticas de deputados do estado de Santa Catarina (SC).
 

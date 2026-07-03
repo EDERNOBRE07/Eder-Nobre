@@ -9,6 +9,7 @@ export const createPool = () => {
   
   return new Pool({
     host: process.env.SQL_HOST,
+    port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
     user: process.env.SQL_USER,
     password: process.env.SQL_PASSWORD,
     database: process.env.SQL_DB_NAME,
@@ -16,12 +17,12 @@ export const createPool = () => {
     idleTimeoutMillis: 10000, // Fecha conexões ociosas após 10 segundos para evitar conexões quebradas/zumbis
     max: 10,                 // Máximo de clientes ativos no pool
     keepAlive: true,         // Envia pacotes TCP keep-alive para evitar desconexão abrupta pelo servidor/firewall
-    ssl: false
+    ssl: process.env.SQL_SSL === 'true' ? { rejectUnauthorized: false } : false
   });
 };
 
 // Create a pool instance.
-const pool = createPool();
+export const pool = createPool();
 
 // Prevent unhandled pool-level errors from crashing the application
 pool.on('error', (err) => {

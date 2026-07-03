@@ -104,6 +104,25 @@ export default function App() {
 
   // Database status tracking
   const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
+  interface DbStatus {
+    connected: boolean;
+    host: string;
+    database: string;
+    user: string;
+    port: string;
+    ssl: string;
+    error: string | null;
+  }
+  const [dbConnectionStatus, setDbConnectionStatus] = useState<DbStatus | null>(null);
+  const [loadingDbStatus, setLoadingDbStatus] = useState(false);
+
+  interface GeminiStatus {
+    valid: boolean;
+    source: string;
+    error: string | null;
+  }
+  const [geminiConnectionStatus, setGeminiConnectionStatus] = useState<GeminiStatus | null>(null);
+  const [loadingGeminiStatus, setLoadingGeminiStatus] = useState(false);
 
   // Settings and Custom API Keys state
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
@@ -412,6 +431,53 @@ export default function App() {
       setDataLoading(false);
     }
   };
+
+  const fetchDbStatus = async () => {
+    if (!token) return;
+    setLoadingDbStatus(true);
+    try {
+      const res = await fetch("/api/db-status", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDbConnectionStatus(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch database status:", err);
+    } finally {
+      setLoadingDbStatus(false);
+    }
+  };
+
+  const fetchGeminiStatus = async (customKeyToUse?: string) => {
+    if (!token) return;
+    setLoadingGeminiStatus(true);
+    try {
+      const activeKey = typeof customKeyToUse === "string" ? customKeyToUse : customGeminiKey;
+      const res = await fetch("/api/gemini-status", {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          "X-Gemini-API-Key": activeKey
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGeminiConnectionStatus(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch Gemini status:", err);
+    } finally {
+      setLoadingGeminiStatus(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSettingsModalOpen && token) {
+      fetchDbStatus();
+      fetchGeminiStatus();
+    }
+  }, [isSettingsModalOpen, token]);
 
   // Sync state back to SQL Server (atomic ReplaceAll snapshot save)
   const syncWithDatabase = async (updatedRecordsList: DBRecord[]): Promise<boolean> => {
@@ -1845,10 +1911,24 @@ export default function App() {
                                                      item.error?.toLowerCase().includes("exceeded") || 
                                                      item.error?.includes("429") ||
                                                      item.error?.includes("RESOURCE_EXHAUSTED");
+                                const isAuthError = 
+                                  item.error?.includes("401") || 
+                                  item.error?.toLowerCase().includes("unauthenticated") || 
+                                  item.error?.toLowerCase().includes("autenticação") || 
+                                  item.error?.toLowerCase().includes("api_key") || 
+                                  item.error?.toLowerCase().includes("chave de api") ||
+                                  item.error?.toLowerCase().includes("auth");
+
                                 return (
                                   <div className="mt-1.5 space-y-1">
                                     <p className="text-[10px] text-red-400 font-bold flex items-center gap-1">
-                                      <span>{isQuotaError ? "⚠️ Limite de Cota Excedido (API Gratuita)" : "Erro no processamento do arquivo"}</span>
+                                      <span>
+                                        {isQuotaError 
+                                          ? "⚠️ Limite de Cota Excedido (API Gratuita)" 
+                                          : isAuthError 
+                                            ? "🔑 Chave de API Gemini Inválida ou Ausente" 
+                                            : "Erro no processamento do arquivo"}
+                                      </span>
                                     </p>
                                     
                                     {isQuotaError ? (
@@ -1863,6 +1943,54 @@ export default function App() {
                                             <li><strong>Aguarde 1 minuto:</strong> O limite de cota é renovado a cada minuto. Aguarde um instante e clique no botão de reprocessar ao lado.</li>
                                             <li><strong>Configurar chave própria:</strong> Se tiver uma chave de API própria (paga), você pode configurá-la nas configurações do projeto para ter cotas ilimitadas.</li>
                                           </ul>
+                                        </div>
+                                      </div>
+                                    ) : isAuthError ? (
+                                      <div className="text-[11px] text-slate-300 bg-rose-950/20 border border-rose-900/40 rounded-xl p-3.5 leading-relaxed max-w-2xl shadow-md space-y-3">
+                                        <div className="flex items-start gap-2 text-rose-400 font-bold">
+                                          <span className="text-sm">🔑</span>
+                                          <div>
+                                            <p className="text-[11.5px]">Erro de Autenticação da API do Gemini</p>
+                                            <p className="font-normal text-[10px] text-slate-400 mt-0.5">Sua chave de API do Gemini está incorreta, expirou ou não foi configurada.</p>
+                                          </div>
+                                        </div>
+                                        
+                                        <div className="bg-slate-950/80 border border-slate-800/80 rounded-lg p-3 space-y-2">
+                                          <p className="text-[10px] text-slate-300 font-semibold">
+                                            💡 Corrija agora mesmo colando uma chave de API válida abaixo:
+                                          </p>
+                                          <div className="flex flex-col sm:flex-row gap-2">
+                                            <input 
+                                              type="password"
+                                              placeholder="Cole sua chave (começa com AIzaSy...) aqui"
+                                              defaultValue={customGeminiKey}
+                                              id={`inline-key-input-${item.id}`}
+                                              className="flex-1 bg-slate-900 border border-slate-700 focus:border-blue-500 rounded px-2.5 py-1 text-[10.5px] font-mono text-white focus:outline-none placeholder-slate-600"
+                                            />
+                                            <button
+                                              onClick={() => {
+                                                const inputEl = document.getElementById(`inline-key-input-${item.id}`) as HTMLInputElement;
+                                                const val = inputEl ? inputEl.value.trim() : "";
+                                                if (!val) {
+                                                  showToast("Por favor, insira uma chave de API do Gemini válida.", "error");
+                                                  return;
+                                                }
+                                                // Save key to local storage and state
+                                                setCustomGeminiKey(val);
+                                                localStorage.setItem("custom_gemini_api_key", val);
+                                                showToast("Chave Gemini configurada localmente! Reprocessando arquivo...", "success");
+                                                // Trigger retry
+                                                handleRetryItem(item.id);
+                                              }}
+                                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] px-3 py-1.5 rounded transition-colors whitespace-nowrap cursor-pointer flex items-center justify-center gap-1 shadow-sm"
+                                            >
+                                              <span>Salvar e Reprocessar</span>
+                                            </button>
+                                          </div>
+                                          <div className="text-[9.5px] text-slate-400 leading-relaxed pt-1.5 flex flex-col gap-1 border-t border-slate-800/40 mt-1">
+                                            <p>1. Obtenha uma chave grátis no <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline font-semibold">Google AI Studio</a>.</p>
+                                            <p>2. Se preferir a configuração do servidor, adicione a chave como <code className="text-emerald-400 bg-slate-900 px-1 py-0.5 rounded font-mono">GEMINI_API_KEY</code> no menu <strong>Configurações/Secrets</strong> no painel superior do Google AI Studio Build.</p>
+                                          </div>
                                         </div>
                                       </div>
                                     ) : (
@@ -3151,22 +3279,217 @@ export default function App() {
                     <Info size={11} /> Usando a chave de API padrão do servidor (se configurada).
                   </p>
                 )}
+
+                <div className="flex justify-between items-center mt-2 pt-1 border-t border-slate-800/40">
+                  <span className="text-[10px] text-slate-400 font-sans">Status da Conectividade IA:</span>
+                  <button 
+                    onClick={() => fetchGeminiStatus(customGeminiKey)} 
+                    disabled={loadingGeminiStatus}
+                    className="flex items-center gap-1.5 text-[10px] bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 py-1 px-2.5 rounded font-sans transition-colors cursor-pointer"
+                  >
+                    {loadingGeminiStatus ? (
+                      <>
+                        <Loader2 size={11} className="animate-spin" />
+                        <span>Validando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RotateCw size={11} />
+                        <span>Testar Chave Gemini</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {geminiConnectionStatus && (
+                  <div className={`mt-2 p-3 rounded-lg border font-sans text-[11px] leading-relaxed ${
+                    geminiConnectionStatus.valid 
+                      ? "bg-emerald-950/20 border-emerald-800/30 text-emerald-300" 
+                      : "bg-rose-950/20 border-rose-800/30 text-rose-300"
+                  }`}>
+                    <div className="flex items-center gap-1.5 font-bold mb-1">
+                      <span className={`w-1.5 h-1.5 rounded-full ${geminiConnectionStatus.valid ? "bg-emerald-500 animate-pulse" : "bg-rose-500 animate-pulse"}`}></span>
+                      <span>{geminiConnectionStatus.valid ? "INTEGRAÇÃO ATIVA (OK)" : "ERRO DE AUTENTICAÇÃO"}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      Origem: {geminiConnectionStatus.source}
+                    </p>
+                    {!geminiConnectionStatus.valid && (
+                      <div className="mt-1.5 space-y-1">
+                        <p className="font-semibold text-rose-400 text-[10px] font-mono break-all bg-slate-950 border border-rose-950/40 p-2 rounded leading-relaxed select-text">
+                          {geminiConnectionStatus.error}
+                        </p>
+                        <p className="text-[9.5px] text-slate-400 leading-relaxed pt-0.5">
+                          💡 <strong>Dica de Correção:</strong> Certifique-se de copiar a chave inteira do Google AI Studio (geralmente começa com <code className="text-emerald-400 font-mono bg-slate-950 px-1 rounded">AIzaSy</code>) sem espaços extras. Se o erro persistir, gere uma nova chave de API gratuita.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-slate-800 pt-4 space-y-3">
-                <h4 className="font-semibold text-slate-200">Status de Conexão com o Banco de Dados</h4>
-                <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 font-mono text-[11px]">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Armazenamento Ativo:</span>
-                    <span className={isDbFallbackLocal ? "text-amber-400" : "text-emerald-400"}>
-                      {isDbFallbackLocal ? "Fallback Local (JSON)" : "Nuvem Segura (PostgreSQL/Firestore)"}
-                    </span>
+                <div className="flex justify-between items-center">
+                  <h4 className="font-semibold text-slate-200">Status do Banco de Dados PostgreSQL</h4>
+                  <button 
+                    onClick={fetchDbStatus} 
+                    disabled={loadingDbStatus}
+                    className="flex items-center gap-1.5 text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 py-1 px-2.5 rounded font-sans transition-colors cursor-pointer"
+                  >
+                    {loadingDbStatus ? (
+                      <>
+                        <Loader2 size={11} className="animate-spin" />
+                        <span>Testando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RotateCw size={11} />
+                        <span>Testar Conexão</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {loadingDbStatus ? (
+                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 flex flex-col items-center justify-center gap-2">
+                    <Loader2 size={16} className="text-blue-500 animate-spin" />
+                    <span className="text-[10px] text-slate-400">Consultando integridade do banco...</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Modo de Gravação:</span>
-                    <span className="text-slate-100">{autoSaveAfterImport ? "Gravação Direta" : "Rascunho Provisório"}</span>
+                ) : dbConnectionStatus ? (
+                  <div className="space-y-2">
+                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 font-mono text-[11px]">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">PostgreSQL Status:</span>
+                        <span className={dbConnectionStatus.connected ? "text-emerald-400 font-bold flex items-center gap-1" : "text-rose-500 font-bold flex items-center gap-1"}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${dbConnectionStatus.connected ? "bg-emerald-500 animate-pulse" : "bg-rose-500 animate-pulse"}`}></span>
+                          {dbConnectionStatus.connected ? "CONECTADO COM SUCESSO!" : "ERRO DE CONEXÃO"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between border-t border-slate-900/60 pt-1.5">
+                        <span className="text-slate-500">Host (SQL_HOST):</span>
+                        <span className="text-slate-200">{dbConnectionStatus.host}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Porta (SQL_PORT):</span>
+                        <span className="text-slate-200">{dbConnectionStatus.port}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Banco de Dados (SQL_DB_NAME):</span>
+                        <span className="text-slate-200">{dbConnectionStatus.database}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Usuário (SQL_USER):</span>
+                        <span className="text-slate-200">{dbConnectionStatus.user}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">SSL Ativo (SQL_SSL):</span>
+                        <span className="text-slate-200">{dbConnectionStatus.ssl === "true" ? "Ativo" : "Inativo"}</span>
+                      </div>
+                    </div>
+
+                    {!dbConnectionStatus.connected && (
+                      <div className="bg-rose-950/20 border border-rose-900/30 rounded-lg p-3 space-y-2 text-rose-300">
+                        <p className="font-semibold text-[11px] flex items-center gap-1">
+                          ⚠️ Detalhes do Erro Técnico:
+                        </p>
+                        <p className="font-mono text-[10px] bg-slate-950 border border-rose-950/40 p-2 rounded text-rose-400 break-words leading-relaxed select-text">
+                          {dbConnectionStatus.error}
+                        </p>
+                        <div className="text-[10px] leading-relaxed space-y-1 text-slate-400">
+                          <p className="font-bold text-slate-300">Como corrigir na Hostinger:</p>
+                          <ul className="list-disc pl-3.5 space-y-1">
+                            <li>Verifique se as variáveis no arquivo <code className="text-emerald-400 bg-slate-950 px-1 py-0.5 rounded font-mono">.env</code> na raiz do projeto estão corretas.</li>
+                            <li>No hPanel, verifique se o usuário do banco de dados possui privilégios de acesso e se a senha está correta.</li>
+                            <li>Se estiver rodando na mesma máquina, use <code className="text-white">localhost</code> ou <code className="text-white">127.0.0.1</code>. Se estiver em outro servidor, certifique-se de liberar o IP nas permissões de acesso remoto da Hostinger.</li>
+                            <li>Certifique-se de que executou o comando <code className="text-blue-400 font-mono">npx drizzle-kit push</code> via SSH no terminal da Hostinger para criar as tabelas antes de rodar o app.</li>
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-[11px] text-slate-400">
+                    Clique em <strong>Testar Conexão</strong> acima para obter um diagnóstico em tempo real do banco de dados na Hostinger.
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="font-semibold text-slate-200">Transferência & Backup de Dados (Migrar para Hostinger)</h4>
+                </div>
+                <p className="text-[10.5px] text-slate-400 leading-relaxed font-sans">
+                  Para transferir todos os dados cadastrados deste ambiente para o seu site publicado na Hostinger, use os controles rápidos de exportação e importação de backup abaixo:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    onClick={() => {
+                      try {
+                        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(records, null, 2));
+                        const downloadAnchor = document.createElement('a');
+                        downloadAnchor.setAttribute("href", dataStr);
+                        downloadAnchor.setAttribute("download", `backup_dados_parlamentares_${new Date().toISOString().split('T')[0]}.json`);
+                        document.body.appendChild(downloadAnchor);
+                        downloadAnchor.click();
+                        downloadAnchor.remove();
+                        showToast("Backup JSON gerado e baixado com sucesso!", "success");
+                      } catch (err) {
+                        showToast("Erro ao exportar arquivo de backup.", "error");
+                      }
+                    }}
+                    className="flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 px-3 rounded-lg text-[11px] font-sans font-semibold transition-colors cursor-pointer border border-slate-700/50 shadow-sm"
+                  >
+                    <Download size={12} />
+                    <span>Passo 1: Baixar Backup (JSON)</span>
+                  </button>
+                  <div className="relative">
+                    <input
+                      type="file"
+                      id="backup-upload-input"
+                      accept=".json"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = async (evt) => {
+                          try {
+                            const importedRecords = JSON.parse(evt.target?.result as string);
+                            if (!Array.isArray(importedRecords)) {
+                              showToast("Arquivo inválido. Esperado uma lista de registros.", "error");
+                              return;
+                            }
+                            const confirmImport = window.confirm(`ATENÇÃO: Deseja importar os ${importedRecords.length} registros contidos neste arquivo? Isso irá substituir permanentemente todos os registros atuais do banco de dados ativo!`);
+                            if (!confirmImport) return;
+
+                            const success = await syncWithDatabase(importedRecords);
+                            if (success) {
+                              setRecords(importedRecords);
+                              showToast("Banco de Dados restaurado e sincronizado com sucesso!", "success");
+                            } else {
+                              showToast("Erro ao sincronizar dados com o servidor.", "error");
+                            }
+                          } catch (err: any) {
+                            showToast("Erro ao processar arquivo JSON: " + err.message, "error");
+                          }
+                        };
+                        reader.readAsText(file);
+                        // Reset input
+                        e.target.value = "";
+                      }}
+                      className="hidden"
+                    />
+                    <button
+                      onClick={() => document.getElementById('backup-upload-input')?.click()}
+                      className="w-full flex items-center justify-center gap-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 py-2 px-3 rounded-lg text-[11px] font-sans font-semibold transition-colors cursor-pointer shadow-sm"
+                    >
+                      <Upload size={12} />
+                      <span>Passo 2: Restaurar Backup (JSON)</span>
+                    </button>
                   </div>
                 </div>
+                <p className="text-[9.5px] text-slate-500 italic leading-relaxed">
+                  💡 <strong>Como usar:</strong> 1. No ambiente do Google AI Studio Build, clique em "Passo 1" para baixar o arquivo JSON. 2. Acesse seu site na Hostinger, abra as configurações e clique no "Passo 2" para enviar o arquivo baixado. Os dados serão gravados diretamente no PostgreSQL de produção.
+                </p>
               </div>
 
               <div className="border-t border-slate-800 pt-4 text-[10.5px] text-slate-400 leading-relaxed space-y-1">
