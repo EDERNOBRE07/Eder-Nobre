@@ -219,7 +219,7 @@ app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
 
 // GET database connection status and config (Secured)
 app.get("/api/db-status", requireAuth, async (req: AuthRequest, res) => {
-  const defaultPort = isMySQL ? "3306" : "5432";
+  const activePort = isMySQL ? (process.env.SQL_PORT || "3306") : "5432";
   const dbEngine = isMySQL ? "MySQL" : "PostgreSQL";
   try {
     const client = await pool.connect();
@@ -231,7 +231,7 @@ app.get("/api/db-status", requireAuth, async (req: AuthRequest, res) => {
         host: process.env.SQL_HOST || "não configurado",
         database: process.env.SQL_DB_NAME || "não configurado",
         user: process.env.SQL_USER || "não configurado",
-        port: process.env.SQL_PORT || defaultPort,
+        port: activePort,
         ssl: process.env.SQL_SSL || "false",
         error: null
       });
@@ -245,7 +245,7 @@ app.get("/api/db-status", requireAuth, async (req: AuthRequest, res) => {
       host: process.env.SQL_HOST || "não configurado",
       database: process.env.SQL_DB_NAME || "não configurado",
       user: process.env.SQL_USER || "não configurado",
-      port: process.env.SQL_PORT || defaultPort,
+      port: activePort,
       ssl: process.env.SQL_SSL || "false",
       error: err.message || String(err)
     });

@@ -106,6 +106,7 @@ export default function App() {
   const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
   interface DbStatus {
     connected: boolean;
+    engine?: string;
     host: string;
     database: string;
     user: string;
@@ -405,6 +406,9 @@ export default function App() {
     if (!token) return;
     setDataLoading(true);
     try {
+      // Fetch DB status concurrently for UI accuracy
+      fetchDbStatus();
+      
       // 1. Fetch Records
       const recRes = await fetch("/api/records", {
         headers: { Authorization: `Bearer ${token}` }
@@ -1518,15 +1522,23 @@ export default function App() {
                   Modo Backup (JSON)
                 </span>
               ) : (
-                <span className="text-emerald-400 font-bold flex items-center gap-1" title="PostgreSQL Real Ativo">
+                <span className="text-emerald-400 font-bold flex items-center gap-1" title="Banco de Dados Conectado">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                  PostgreSQL Conectado
+                  {dbConnectionStatus?.engine || "Banco de Dados"} Conectado
                 </span>
               )}
             </div>
             {isDbFallbackLocal && (
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-md p-2 mt-1 text-[10px] text-amber-300 leading-relaxed">
-                ⚠️ <strong>Nota Google Cloud / Hostinger:</strong> O banco SQL está inacessível ou não configurado. Os dados estão sendo salvos localmente (JSON), mas em servidores como <strong>Cloud Run</strong>, este armazenamento é efêmero e será apagado nas reinicializações do container. Certifique-se de configurar e liberar as credenciais de rede do seu banco de dados no Google Cloud.
+                {window.location.hostname.includes("run.app") || window.location.hostname.includes("localhost") ? (
+                  <>
+                    💡 <strong>Ambiente de Desenvolvimento:</strong> O banco de dados SQL não está conectado, por isso o app está usando o <strong>Modo Backup Local (JSON)</strong>. No AI Studio, os seus dados são salvos com segurança e persistência no espaço de trabalho. Ao implantar na <strong>Hostinger</strong>, configure o PostgreSQL/MySQL conforme o arquivo <code className="text-blue-400 font-mono">HOSTINGER_DEPLOY.md</code>.
+                  </>
+                ) : (
+                  <>
+                    ⚠️ <strong>Nota Google Cloud / Hostinger:</strong> O banco SQL está inacessível ou não configurado. Os dados estão sendo salvos localmente (JSON), mas em servidores como <strong>Cloud Run</strong>, este armazenamento é efêmero e será apagado nas reinicializações do container. Certifique-se de configurar e liberar as credenciais de rede do seu banco de dados no Google Cloud.
+                  </>
+                )}
               </div>
             )}
           </div>

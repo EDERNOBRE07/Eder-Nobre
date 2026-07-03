@@ -8,8 +8,17 @@ const { Pool } = pkg;
 import mysql from 'mysql2/promise';
 import * as schema from './schema.ts';
 
-// Detect database engine from environment
-export const isMySQL = process.env.SQL_ENGINE === 'mysql' || process.env.SQL_PORT === '3306';
+import * as fs from 'fs';
+
+// Detect if we are in Google Cloud/AI Studio and there is an active PostgreSQL Cloud SQL instance socket
+const cloudSqlHost = process.env.SQL_HOST;
+const isGoogleCloudPostgres = !!(cloudSqlHost && (
+  cloudSqlHost.startsWith('/app/cloudsql') || 
+  cloudSqlHost.startsWith('/cloudsql') ||
+  fs.existsSync(`${cloudSqlHost}/.s.PGSQL.5432`)
+));
+
+export const isMySQL = !isGoogleCloudPostgres && (process.env.SQL_ENGINE === 'mysql' || process.env.SQL_PORT === '3306');
 
 // Initialize connection pools based on target DB engine
 let pgPoolInstance: any = null;
@@ -17,9 +26,7 @@ let mysqlPoolInstance: any = null;
 
 if (isMySQL) {
   console.log("[Database] Initializing MySQL/MariaDB connection pool...");
-  mysqlPoolInstance = mysql.createPool({
-    host: process.env.SQL_HOST,
-    port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 3306,
+  const mysqlConfig: any = {
     user: process.env.SQL_USER,
     password: process.env.SQL_PASSWORD,
     database: process.env.SQL_DB_NAME,
@@ -27,12 +34,21 @@ if (isMySQL) {
     connectionLimit: 10,
     queueLimit: 0,
     ssl: process.env.SQL_SSL === 'true' ? { rejectUnauthorized: false } : undefined
-  });
+  };
+
+  if (process.env.SQL_HOST && process.env.SQL_HOST.startsWith('/')) {
+    mysqlConfig.socketPath = process.env.SQL_HOST;
+    console.log(`[Database] Connecting via Unix socket: ${process.env.SQL_HOST}`);
+  } else {
+    mysqlConfig.host = process.env.SQL_HOST || '127.0.0.1';
+    mysqlConfig.port = process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 3306;
+    console.log(`[Database] Connecting via TCP: ${mysqlConfig.host}:${mysqlConfig.port}`);
+  }
+
+  mysqlPoolInstance = mysql.createPool(mysqlConfig);
 } else {
   console.log("[Database] Initializing PostgreSQL connection pool...");
-  pgPoolInstance = new Pool({
-    host: process.env.SQL_HOST,
-    port: process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432,
+  const pgConfig: any = {
     user: process.env.SQL_USER,
     password: process.env.SQL_PASSWORD,
     database: process.env.SQL_DB_NAME,
@@ -41,7 +57,20 @@ if (isMySQL) {
     max: 10,
     keepAlive: true,
     ssl: process.env.SQL_SSL === 'true' ? { rejectUnauthorized: false } : false
-  });
+  };
+
+  if (isGoogleCloudPostgres) {
+    pgConfig.host = cloudSqlHost;
+    // Force port to 5432 for the PostgreSQL Unix socket connection on Cloud Run
+    pgConfig.port = 5432;
+    console.log(`[Database] Connecting to Google Cloud PostgreSQL Unix socket: ${cloudSqlHost}`);
+  } else {
+    pgConfig.host = process.env.SQL_HOST || '127.0.0.1';
+    pgConfig.port = process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 5432;
+    console.log(`[Database] Connecting to PostgreSQL via TCP: ${pgConfig.host}:${pgConfig.port}`);
+  }
+
+  pgPoolInstance = new Pool(pgConfig);
 }
 
 // Prevent unhandled pool-level errors from crashing the application
