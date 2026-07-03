@@ -9,7 +9,7 @@ import {
   User,
   GoogleAuthProvider
 } from "firebase/auth";
-import { auth, googleAuthProvider } from "./lib/firebase.ts";
+import { auth, googleAuthProvider, googleDriveProvider } from "./lib/firebase.ts";
 import { Record as DBRecord, ExecutionLog, Sector, Region, ImportSessionItem } from "./types.ts";
 import { SECTORS, getSectorById } from "./utils/sectors.ts";
 import { REGIONS, getRegionIdForCity } from "./utils/regionMapper.ts";
@@ -183,12 +183,13 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleLogin = async (requestDrive = false) => {
     try {
       setAuthLoading(true);
-      const result = await signInWithPopup(auth, googleAuthProvider);
+      const provider = requestDrive ? googleDriveProvider : googleAuthProvider;
+      const result = await signInWithPopup(auth, provider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
+      if (credential?.accessToken && requestDrive) {
         setDriveToken(credential.accessToken);
         showToast("Sessão e Google Drive conectados com sucesso!", "success");
       } else {
@@ -1780,7 +1781,7 @@ export default function App() {
                         </p>
                       </div>
                       <button
-                        onClick={handleGoogleLogin}
+                        onClick={() => handleGoogleLogin(true)}
                         className="mt-4 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 px-4 rounded-xl w-full transition-colors flex items-center justify-center gap-2 shadow-sm"
                       >
                         <Cloud size={14} /> Conectar Google Drive

@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { drizzle as pgDrizzle } from 'drizzle-orm/node-postgres';
 import { drizzle as mysqlDrizzle } from 'drizzle-orm/mysql2';
 import pkg from 'pg';

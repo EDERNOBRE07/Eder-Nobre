@@ -1,3 +1,6 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { relations } from 'drizzle-orm';
 import { pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 import { mysqlTable, int, varchar, text as mysqlText, timestamp as mysqlTimestamp } from 'drizzle-orm/mysql-core';

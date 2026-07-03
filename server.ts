@@ -9,7 +9,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 // Initialize DB pool and connection
-import { db, bootstrapDb, pool } from "./src/db/index.ts";
+import { db, bootstrapDb, pool, isMySQL } from "./src/db/index.ts";
 import { records, executionLogs } from "./src/db/schema.ts";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
 import { desc } from "drizzle-orm";
@@ -172,12 +172,14 @@ app.get("/api/health", (req, res) => {
 
 // GET all records (Secured)
 app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
+  const dbType = isMySQL ? "MySQL" : "PostgreSQL";
+  const dbSource = isMySQL ? "mysql" : "postgres";
   try {
     const allRecords = await db.select().from(records);
-    res.setHeader("X-Database-Source", "postgres");
+    res.setHeader("X-Database-Source", dbSource);
     res.json(allRecords);
   } catch (error: any) {
-    console.warn("[Database Fallback] Postgres inactive/error. Falling back to Cloud Firestore for fetching records. Reason:", error.message || error);
+    console.warn(`[Database Fallback] ${dbType} inactive/error. Falling back to Cloud Firestore for fetching records. Reason:`, error.message || error);
     try {
       const fsRecords = await fetchFirestoreRecords();
       res.setHeader("X-Database-Source", "firestore");
@@ -193,12 +195,14 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
 
 // GET all execution logs (Secured)
 app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
+  const dbType = isMySQL ? "MySQL" : "PostgreSQL";
+  const dbSource = isMySQL ? "mysql" : "postgres";
   try {
     const logs = await db.select().from(executionLogs).orderBy(desc(executionLogs.timestamp));
-    res.setHeader("X-Database-Source", "postgres");
+    res.setHeader("X-Database-Source", dbSource);
     res.json(logs);
   } catch (error: any) {
-    console.warn("[Database Fallback] Postgres inactive/error. Falling back to Cloud Firestore for fetching logs. Reason:", error.message || error);
+    console.warn(`[Database Fallback] ${dbType} inactive/error. Falling back to Cloud Firestore for fetching logs. Reason:`, error.message || error);
     try {
       const fsLogs = await fetchFirestoreLogs();
       res.setHeader("X-Database-Source", "firestore");
@@ -666,16 +670,17 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
 
 async function startServer() {
   let isPostgresActive = false;
-  // Bootstrap tables and test connection to PostgreSQL at boot time
+  const dbType = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
+  // Bootstrap tables and test connection to Database at boot time
   try {
-    console.log("[Database] Testing connection to PostgreSQL on host:", process.env.SQL_HOST);
+    console.log(`[Database] Testing connection to ${dbType} on host:`, process.env.SQL_HOST);
     await bootstrapDb();
     // Standard fast query to verify database and table availability
     await db.select().from(records).limit(1);
-    console.log("[Database] Successfully connected to PostgreSQL and tables verified!");
+    console.log(`[Database] Successfully connected to ${dbType} and tables verified!`);
     isPostgresActive = true;
   } catch (err: any) {
-    console.error("[Database] Failed to connect or bootstrap PostgreSQL. Fallback Cloud Firestore and JSON files will be used. Error details:", err.message || err);
+    console.error(`[Database] Failed to connect or bootstrap ${dbType}. Fallback Cloud Firestore and JSON files will be used. Error details:`, err.message || err);
   }
 
   // Run automatic data recovery routine to migrate local JSON stores to Cloud Firestore & Postgres!
