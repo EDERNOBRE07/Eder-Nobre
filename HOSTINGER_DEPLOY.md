@@ -2,15 +2,15 @@
 
 Este guia descreve o passo a passo completo para publicar o aplicativo de classificação e monitoramento de ações parlamentares em um subdomínio da **Hostinger**.
 
-Como este é um aplicativo full-stack moderno construído com **React (Vite)** no front-end, **Express (Node.js)** no back-end e **PostgreSQL** com **Firebase Auth**, você precisará utilizar a hospedagem **Node.js** da Hostinger (disponível nos planos VPS ou Hospedagem de Sites Business/Cloud com suporte a SSH e Node.js).
+Como este é um aplicativo full-stack moderno construído com **React (Vite)** no front-end, **Express (Node.js)** no back-end e **MySQL** com **Firebase Auth**, você precisará utilizar a hospedagem **Node.js** da Hostinger (disponível nos planos VPS ou Hospedagem de Sites Business/Cloud com suporte a SSH e Node.js).
 
 ---
 
 ## 📋 Pré-requisitos na Hostinger
 
 1. **Subdomínio criado**: Crie o subdomínio desejado (ex: `painel.seudominio.com`) no seu painel da Hostinger (hPanel).
-2. **Banco de Dados PostgreSQL**: Crie um novo banco de dados PostgreSQL no hPanel (Seção *Bancos de Dados* -> *Bancos de Dados PostgreSQL*). Guarde os seguintes dados:
-   - Host do Banco (ex: `localhost` ou o IP fornecido pela Hostinger)
+2. **Banco de Dados MySQL**: Crie um novo banco de dados MySQL no hPanel (Seção *Bancos de Dados* -> *Bancos de Dados MySQL*). Guarde os seguintes dados:
+   - Host do Banco (ex: `localhost` ou o IP/Host de conexão fornecido pela Hostinger)
    - Nome do Banco de Dados
    - Usuário do Banco de Dados
    - Senha do Usuário
@@ -32,8 +32,10 @@ Crie um arquivo chamado `.env` na raiz do projeto extraído (você pode se basea
 # Porta do Servidor (deixe vazia para que a Hostinger defina dinamicamente)
 PORT=3000
 
-# Conexão com o PostgreSQL da Hostinger
+# Conexão com o MySQL da Hostinger
+SQL_ENGINE=mysql
 SQL_HOST=localhost
+SQL_PORT=3306
 SQL_DB_NAME=seu_banco_de_dados
 SQL_USER=seu_usuario_do_banco
 SQL_PASSWORD=sua_senha_do_banco
@@ -71,7 +73,7 @@ Na Hostinger, o gerenciamento de aplicativos Node.js é simples:
 
 ## 🖥️ Passo 5: Construir o Aplicativo e Sincronizar o Banco (Via SSH)
 
-Para gerar o build de produção do React e configurar as tabelas no seu PostgreSQL, conecte-se via SSH à sua conta Hostinger:
+Para gerar o build de produção do React e configurar as tabelas no seu MySQL, conecte-se via SSH à sua conta Hostinger:
 
 1. Acesse o diretório do seu projeto:
    ```bash
@@ -83,8 +85,8 @@ Para gerar o build de produção do React e configurar as tabelas no seu Postgre
    npm install
    ```
 
-3. **Crie e sincronize as tabelas no PostgreSQL da Hostinger**:
-   O projeto utiliza o Drizzle ORM. Para criar as tabelas `records`, `users` e `execution_logs` automaticamente no seu novo banco PostgreSQL da Hostinger, execute:
+3. **Crie e sincronize as tabelas no MySQL da Hostinger**:
+   O projeto utiliza o Drizzle ORM. Para criar as tabelas `records`, `users` e `execution_logs` automaticamente no seu novo banco MySQL da Hostinger, execute:
    ```bash
    npx drizzle-kit push
    ```

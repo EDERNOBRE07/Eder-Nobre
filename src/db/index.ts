@@ -18,7 +18,7 @@ const isGoogleCloudPostgres = !!(cloudSqlHost && (
   fs.existsSync(`${cloudSqlHost}/.s.PGSQL.5432`)
 ));
 
-export const isMySQL = !isGoogleCloudPostgres && (process.env.SQL_ENGINE === 'mysql' || process.env.SQL_PORT === '3306');
+export const isMySQL = !isGoogleCloudPostgres && (process.env.SQL_ENGINE !== 'postgres');
 
 // Initialize connection pools based on target DB engine
 let pgPoolInstance: any = null;

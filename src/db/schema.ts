@@ -4,9 +4,18 @@ dotenv.config();
 import { relations } from 'drizzle-orm';
 import { pgTable, serial, text, timestamp } from 'drizzle-orm/pg-core';
 import { mysqlTable, int, varchar, text as mysqlText, timestamp as mysqlTimestamp } from 'drizzle-orm/mysql-core';
+import * as fs from 'fs';
 
-// Detect database engine from environment
-const isMySQL = process.env.SQL_ENGINE === 'mysql' || process.env.SQL_PORT === '3306';
+// Detect if we are in Google Cloud/AI Studio and there is an active PostgreSQL Cloud SQL instance socket
+const cloudSqlHost = process.env.SQL_HOST;
+const isGoogleCloudPostgres = !!(cloudSqlHost && (
+  cloudSqlHost.startsWith('/app/cloudsql') || 
+  cloudSqlHost.startsWith('/cloudsql') ||
+  fs.existsSync(`${cloudSqlHost}/.s.PGSQL.5432`)
+));
+
+// Detect database engine from environment - Default to MySQL unless PostgreSQL is specifically active/configured
+const isMySQL = !isGoogleCloudPostgres && (process.env.SQL_ENGINE !== 'postgres');
 
 // Users table associated with Firebase Auth
 export const users = (isMySQL
