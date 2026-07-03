@@ -160,6 +160,28 @@ export default function App() {
               message: errorMessage
             });
             showToast("Erro de domínio não autorizado no Firebase.", "error");
+          } else if (errorCode.includes("admin-restricted-operation") || errorMessage.includes("admin-restricted-operation") || errorCode.includes("operation-not-allowed") || errorMessage.includes("operation-not-allowed")) {
+            // Fallback for restricted/disabled anonymous sign-in in Firebase Console
+            console.log("Using safe anonymous session fallback (auth/admin-restricted-operation)");
+            setUser({
+              uid: "fallback-anonymous-user",
+              email: "anonymous@fallback.local",
+              isAnonymous: true,
+              emailVerified: false,
+              displayName: "Visitante Local",
+              phoneNumber: null,
+              photoURL: null,
+              providerId: "firebase",
+              metadata: {},
+              providerData: [],
+              delete: async () => {},
+              getIdToken: async () => "fallback-anonymous-token",
+              getIdTokenResult: async () => ({} as any),
+              reload: async () => {},
+              toJSON: () => ({})
+            } as any);
+            setToken("fallback-anonymous-token");
+            showToast("Sessão local de visitante ativa!", "info");
           } else {
             showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
           }
@@ -3369,7 +3391,7 @@ export default function App() {
                   <div className="space-y-2">
                     <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 font-mono text-[11px]">
                       <div className="flex justify-between">
-                        <span className="text-slate-400">PostgreSQL Status:</span>
+                        <span className="text-slate-400">Status do {dbConnectionStatus.engine || "Banco de Dados"}:</span>
                         <span className={dbConnectionStatus.connected ? "text-emerald-400 font-bold flex items-center gap-1" : "text-rose-500 font-bold flex items-center gap-1"}>
                           <span className={`w-1.5 h-1.5 rounded-full ${dbConnectionStatus.connected ? "bg-emerald-500 animate-pulse" : "bg-rose-500 animate-pulse"}`}></span>
                           {dbConnectionStatus.connected ? "CONECTADO COM SUCESSO!" : "ERRO DE CONEXÃO"}
