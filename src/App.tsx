@@ -1635,6 +1635,15 @@ export default function App() {
               <Download size={13} />
               <span>Exportar Tudo</span>
             </button>
+
+            <button 
+              onClick={() => setIsSettingsModalOpen(true)}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-bold text-xs py-2 px-3.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm"
+              title="Configurações e Transferência de Dados"
+            >
+              <Settings size={13} className="text-slate-500" />
+              <span>Configurações</span>
+            </button>
           </div>
         </header>
 

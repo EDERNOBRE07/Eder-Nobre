@@ -105,6 +105,15 @@ function getGeminiClient(req?: express.Request): GoogleGenAI {
   if (!key || key === "") {
     throw new Error("A variável de ambiente GEMINI_API_KEY está ausente no servidor e nenhuma chave customizada foi inserida no menu de Configurações.");
   }
+
+  // Detect Google Cloud OAuth Access Tokens (which start with 'AQ.' or 'ya29.')
+  if (key.startsWith("AQ.") || key.startsWith("ya29.")) {
+    throw new Error(
+      `O valor inserido começa com '${key.slice(0, 3)}', que identifica um token de acesso OAuth temporário (expira em 60 minutos) e não uma chave permanente. ` +
+      `Para o funcionamento correto e duradouro, você precisa usar uma Chave de API (API Key) permanente que começa com 'AIzaSy'. ` +
+      `Acesse o site oficial Google AI Studio (https://aistudio.google.com/), faça login, clique em 'Get API Key' (Obter chave de API) e depois em 'Create API Key' (Criar chave de API) para gerar uma chave permanente válida.`
+    );
+  }
   
   console.log(`[Gemini Client] Initializing client. Key ends in: ...${key.slice(-6)}`);
   return new GoogleGenAI({
