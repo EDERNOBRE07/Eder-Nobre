@@ -518,7 +518,8 @@ export default function App() {
       setRecords(recData);
 
       // Sincronização automática ao logar com o Google (usuários reais, não convidados anônimos)
-      if (user && !user.isAnonymous) {
+      const currentUserObj = user || auth.currentUser;
+      if (currentUserObj && !currentUserObj.isAnonymous && currentUserObj.uid !== "fallback-anonymous-user") {
         integrateWithGoogleCloudDb(recData, token);
       }
 
