@@ -46,6 +46,85 @@ if (isMySQL) {
   }
 
   mysqlPoolInstance = mysql.createPool(mysqlConfig);
+
+  // Wrap pool methods to automatically fallback to localhost on connection failure
+  const originalGetConnection = mysqlPoolInstance.getConnection;
+  const originalQuery = mysqlPoolInstance.query;
+  const originalExecute = mysqlPoolInstance.execute;
+
+  let activePool = mysqlPoolInstance;
+
+  mysqlPoolInstance.getConnection = async function(...args: any[]) {
+    try {
+      return await originalGetConnection.apply(activePool, args);
+    } catch (err: any) {
+      if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
+        console.warn(`[Database] Connection to ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
+        const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
+        try {
+          const fallbackPool = mysql.createPool(fallbackConfig);
+          const conn = await fallbackPool.getConnection();
+          activePool = fallbackPool;
+          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for connections.");
+          return conn;
+        } catch (fallbackErr: any) {
+          console.error("[Database] Fallback to 'localhost' also failed:", fallbackErr.message || fallbackErr);
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+  };
+
+  mysqlPoolInstance.query = async function(...args: any[]) {
+    try {
+      return await originalQuery.apply(activePool, args);
+    } catch (err: any) {
+      if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
+        console.warn(`[Database] Query on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
+        const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
+        try {
+          const fallbackPool = mysql.createPool(fallbackConfig);
+          // Test fallback pool
+          const conn = await fallbackPool.getConnection();
+          conn.release();
+          activePool = fallbackPool;
+          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for queries.");
+          return await activePool.query(...args);
+        } catch (fallbackErr: any) {
+          console.error("[Database] Fallback to 'localhost' failed during query:", fallbackErr.message || fallbackErr);
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+  };
+
+  mysqlPoolInstance.execute = async function(...args: any[]) {
+    try {
+      return await originalExecute.apply(activePool, args);
+    } catch (err: any) {
+      if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
+        console.warn(`[Database] Execute on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
+        const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
+        try {
+          const fallbackPool = mysql.createPool(fallbackConfig);
+          const conn = await fallbackPool.getConnection();
+          conn.release();
+          activePool = fallbackPool;
+          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for execute.");
+          return await activePool.execute(...args);
+        } catch (fallbackErr: any) {
+          console.error("[Database] Fallback to 'localhost' failed during execute:", fallbackErr.message || fallbackErr);
+          throw err;
+        }
+      } else {
+        throw err;
+      }
+    }
+  };
 } else {
   console.log("[Database] Initializing PostgreSQL connection pool...");
   const pgConfig: any = {
