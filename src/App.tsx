@@ -150,20 +150,12 @@ export default function App() {
           setAuthLoading(true);
           await signInAnonymously(auth);
         } catch (err: any) {
-          console.error("Anonymous authentication failed:", err);
-          const errorCode = err.code || "unknown";
-          const errorMessage = err.message || String(err);
+          const errorCode = err?.code || "unknown";
+          const errorMessage = err?.message || String(err);
           
-          if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
-            setAuthErrorModal({
-              isOpen: true,
-              code: errorCode,
-              message: errorMessage
-            });
-            showToast("Erro de domínio não autorizado no Firebase.", "error");
-          } else if (errorCode.includes("admin-restricted-operation") || errorMessage.includes("admin-restricted-operation") || errorCode.includes("operation-not-allowed") || errorMessage.includes("operation-not-allowed")) {
+          if (errorCode.includes("admin-restricted-operation") || errorMessage.includes("admin-restricted-operation") || errorCode.includes("operation-not-allowed") || errorMessage.includes("operation-not-allowed")) {
             // Fallback for restricted/disabled anonymous sign-in in Firebase Console
-            console.log("Using safe anonymous session fallback (auth/admin-restricted-operation)");
+            console.log("Using safe anonymous session fallback (auth/admin-restricted-operation):", errorMessage);
             setUser({
               uid: "fallback-anonymous-user",
               email: "anonymous@fallback.local",
@@ -184,7 +176,17 @@ export default function App() {
             setToken("fallback-anonymous-token");
             showToast("Sessão local de visitante ativa!", "info");
           } else {
-            showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
+            console.warn("Anonymous authentication failed (graceful fallback):", err);
+            if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+              setAuthErrorModal({
+                isOpen: true,
+                code: errorCode,
+                message: errorMessage
+              });
+              showToast("Erro de domínio não autorizado no Firebase.", "error");
+            } else {
+              showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
+            }
           }
         }
       }
@@ -400,6 +402,91 @@ export default function App() {
   };
 
   // -------------------------------------------------------------
+  // GOOGLE CLOUD AND HOSTINGER DB INTEGRATION
+  // -------------------------------------------------------------
+  const integrateWithGoogleCloudDb = async (localRecords: DBRecord[], userToken: string) => {
+    const currentHost = window.location.hostname;
+    const isGoogleCloudEnv = currentHost.includes("run.app") || currentHost.includes("aistudio") || currentHost.includes("localhost") || currentHost === "127.0.0.1";
+    
+    if (isGoogleCloudEnv) {
+      console.log("[Integração] Executando no ambiente nativo do Google Cloud. Sem necessidade de sincronização externa.");
+      return;
+    }
+
+    // Configurable Google Cloud Base URL (defaults to the stable shared URL of the project)
+    const gcpAppUrl = (import.meta as any).env?.VITE_GOOGLE_CLOUD_APP_URL || "https://ais-pre-khpdpvn6lyrvy2ntrbwuyb-629020138414.us-west2.run.app";
+    console.log(`[Integração] Sincronização automática ativa com banco do Google Cloud: ${gcpAppUrl}`);
+    
+    try {
+      // 1. Fetch records from Google Cloud database
+      const gcpRes = await fetch(`${gcpAppUrl}/api/records`, {
+        headers: { Authorization: `Bearer ${userToken}` }
+      });
+      
+      if (!gcpRes.ok) {
+        console.warn("[Integração] Falha ao obter dados do banco do Google Cloud:", gcpRes.status);
+        return;
+      }
+      
+      const gcpRecords: DBRecord[] = await gcpRes.json();
+      console.log(`[Integração] Retornados ${gcpRecords.length} registros do Google Cloud.`);
+      
+      // 2. Merge unique records by ID
+      const mergedMap = new Map<string, DBRecord>();
+      
+      // Add local Hostinger MySQL records first
+      localRecords.forEach(r => {
+        if (r && r.id) {
+          mergedMap.set(r.id, r);
+        }
+      });
+      
+      // Merge Google Cloud records
+      let newlyImported = 0;
+      gcpRecords.forEach(r => {
+        if (r && r.id && !mergedMap.has(r.id)) {
+          mergedMap.set(r.id, r);
+          newlyImported++;
+        }
+      });
+      
+      const finalMergedList = Array.from(mergedMap.values());
+      
+      if (newlyImported > 0) {
+        console.log(`[Integração] Mesclando bancos. Encontrados ${newlyImported} novos registros no Google Cloud. Gravando no MySQL da Hostinger...`);
+        const success = await syncWithDatabase(finalMergedList);
+        if (success) {
+          showToast(`Integração automática: ${newlyImported} novos registros do Google Cloud integrados no seu MySQL!`, "success");
+          setRecords(finalMergedList);
+        }
+      } else {
+        console.log("[Integração] Bancos de dados já estão sincronizados.");
+      }
+      
+      // 3. Export any records from Hostinger MySQL that are missing on Google Cloud
+      const missingInGcp = finalMergedList.filter(r => !gcpRecords.some(gr => gr.id === r.id));
+      if (missingInGcp.length > 0) {
+        console.log(`[Integração] Sincronizando ${missingInGcp.length} registros locais para o banco do Google Cloud...`);
+        const syncRes = await fetch(`${gcpAppUrl}/api/records/replaceAll`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${userToken}`
+          },
+          body: JSON.stringify(finalMergedList)
+        });
+        if (syncRes.ok) {
+          console.log("[Integração] Upload concluído de registros locais para o banco do Google Cloud!");
+        } else {
+          console.warn("[Integração] Falha no upload para o banco do Google Cloud:", syncRes.status);
+        }
+      }
+    } catch (err) {
+      console.error("[Integração] Erro na sincronização automática de bancos:", err);
+    }
+  };
+
+  // -------------------------------------------------------------
   // DATABASE ACCESS FLOW
   // -------------------------------------------------------------
   const fetchData = async () => {
@@ -429,6 +516,11 @@ export default function App() {
 
       const recData = await recRes.json();
       setRecords(recData);
+
+      // Sincronização automática ao logar com o Google (usuários reais, não convidados anônimos)
+      if (user && !user.isAnonymous) {
+        integrateWithGoogleCloudDb(recData, token);
+      }
 
       // 2. Fetch Logs
       const logRes = await fetch("/api/logs", {

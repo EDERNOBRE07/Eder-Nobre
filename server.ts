@@ -83,7 +83,31 @@ function addLocalLog(action: string, status: string, details: string, userEmail:
 }
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Support both standard TCP port numbers (Google Cloud, Local dev) and Unix socket paths (Hostinger Passenger cPanel)
+const PORT = process.env.PORT 
+  ? (isNaN(Number(process.env.PORT)) ? process.env.PORT : parseInt(process.env.PORT, 10))
+  : 3000;
+
+// Custom CORS middleware to allow the Hostinger subdomain and other environments to integrate
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && (
+    origin.includes("localhost") || 
+    origin.includes(".run.app") || 
+    origin.includes("mastervisionmarketing.com") ||
+    origin.includes("hostinger.com")
+  )) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Gemini-API-Key");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+    res.setHeader("Access-Control-Expose-Headers", "X-Database-Source");
+  }
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Body parser with 20MB limit to handle files/extracted text
 app.use(express.json({ limit: "20mb" }));
@@ -710,9 +734,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
+  if (typeof PORT === "string") {
+    app.listen(PORT, () => {
+      console.log(`Server running on Unix socket: ${PORT}`);
+    });
+  } else {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
 startServer();
