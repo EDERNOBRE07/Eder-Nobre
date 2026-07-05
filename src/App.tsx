@@ -173,7 +173,7 @@ export default function App() {
           } as any);
           setToken("fallback-anonymous-token");
 
-          if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+          if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain")) {
             setAuthErrorModal({
               isOpen: true,
               code: errorCode,
@@ -221,7 +221,7 @@ export default function App() {
       const errorMessage = err.message || String(err);
       
       // Se for erro de domínio não autorizado ou erro de configuração, mostramos o modal explicativo
-      if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+      if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain")) {
         setAuthErrorModal({
           isOpen: true,
           code: errorCode,

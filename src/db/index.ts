@@ -33,10 +33,9 @@ if (isMySQL) {
     process.env.PORT.startsWith('/')
   );
 
-  let targetHost = process.env.SQL_HOST || '127.0.0.1';
-  if (isHostinger && targetHost !== '127.0.0.1' && targetHost !== 'localhost') {
-    console.log(`[Database] Hostinger environment detected. Converting remote host '${targetHost}' to 'localhost' for direct local connection.`);
-    targetHost = 'localhost';
+  let targetHost = process.env.SQL_HOST || 'localhost';
+  if (isHostinger) {
+    console.log(`[Database] Hostinger environment detected. Using configured host '${targetHost}'.`);
   }
 
   const mysqlConfig: any = {
