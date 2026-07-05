@@ -153,40 +153,35 @@ export default function App() {
           const errorCode = err?.code || "unknown";
           const errorMessage = err?.message || String(err);
           
-          if (errorCode.includes("admin-restricted-operation") || errorMessage.includes("admin-restricted-operation") || errorCode.includes("operation-not-allowed") || errorMessage.includes("operation-not-allowed")) {
-            // Fallback for restricted/disabled anonymous sign-in in Firebase Console
-            console.log("Using safe anonymous session fallback (auth/admin-restricted-operation):", errorMessage);
-            setUser({
-              uid: "fallback-anonymous-user",
-              email: "anonymous@fallback.local",
-              isAnonymous: true,
-              emailVerified: false,
-              displayName: "Visitante Local",
-              phoneNumber: null,
-              photoURL: null,
-              providerId: "firebase",
-              metadata: {},
-              providerData: [],
-              delete: async () => {},
-              getIdToken: async () => "fallback-anonymous-token",
-              getIdTokenResult: async () => ({} as any),
-              reload: async () => {},
-              toJSON: () => ({})
-            } as any);
-            setToken("fallback-anonymous-token");
-            showToast("Sessão local de visitante ativa!", "info");
+          console.log("Using safe anonymous session fallback after auth error:", errorMessage);
+          setUser({
+            uid: "fallback-anonymous-user",
+            email: "anonymous@fallback.local",
+            isAnonymous: true,
+            emailVerified: false,
+            displayName: "Visitante Local",
+            phoneNumber: null,
+            photoURL: null,
+            providerId: "firebase",
+            metadata: {},
+            providerData: [],
+            delete: async () => {},
+            getIdToken: async () => "fallback-anonymous-token",
+            getIdTokenResult: async () => ({} as any),
+            reload: async () => {},
+            toJSON: () => ({})
+          } as any);
+          setToken("fallback-anonymous-token");
+
+          if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
+            setAuthErrorModal({
+              isOpen: true,
+              code: errorCode,
+              message: errorMessage
+            });
+            showToast("Modo de compatibilidade ativo! Domínio não autorizado no Firebase Auth.", "info");
           } else {
-            console.warn("Anonymous authentication failed (graceful fallback):", err);
-            if (errorCode.includes("unauthorized-domain") || errorCode.includes("configuration-not-found") || errorMessage.includes("unauthorized-domain") || window.location.hostname === "matrizmvpsdb.mastervisionmarketing.com") {
-              setAuthErrorModal({
-                isOpen: true,
-                code: errorCode,
-                message: errorMessage
-              });
-              showToast("Erro de domínio não autorizado no Firebase.", "error");
-            } else {
-              showToast("Sessão anônima não permitida. Por favor, conecte sua conta.", "info");
-            }
+            showToast("Sessão local de visitante ativa!", "info");
           }
         }
       }
@@ -1747,6 +1742,20 @@ export default function App() {
                 <RefreshCw size={11} className="animate-spin text-slate-400" /> Carregando...
               </span>
             )}
+
+            {/* Database Sync Status Badge */}
+            <div 
+              onClick={() => setIsSettingsModalOpen(true)}
+              className={`text-[10.5px] font-sans font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg border cursor-pointer select-none transition-all hover:shadow-sm ${
+                isDbFallbackLocal 
+                  ? "bg-amber-500/10 border-amber-500/30 text-amber-500 hover:bg-amber-500/20" 
+                  : "bg-emerald-500/10 border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/20"
+              }`}
+              title={isDbFallbackLocal ? "Utilizando armazenamento de redundância local" : "Conectado ao MySQL Hostinger"}
+            >
+              <span className={`w-2 h-2 rounded-full ${isDbFallbackLocal ? 'bg-amber-500' : 'bg-emerald-500'} animate-pulse`} />
+              <span>{isDbFallbackLocal ? "Banco Local" : "MySQL Hostinger Ativo"}</span>
+            </div>
 
             <button 
               onClick={() => setIsImportPanelOpen(prev => !prev)}
@@ -3549,6 +3558,48 @@ export default function App() {
                     Clique em <strong>Testar Conexão</strong> acima para obter um diagnóstico em tempo real do banco de dados na Hostinger.
                   </div>
                 )}
+              </div>
+
+              <div className="border-t border-slate-800 pt-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="font-semibold text-slate-200">Sincronização Manual Forçada (Garantia de Gravação)</h4>
+                </div>
+                <p className="text-[10.5px] text-slate-400 leading-relaxed font-sans">
+                  O sistema salva as alterações de forma 100% automática a cada operação. Para garantir a gravação manual imediata dos dados ativos no banco de dados da Hostinger, utilize o controle abaixo:
+                </p>
+                <div className="bg-slate-900 border border-slate-800 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-0.5 text-left">
+                    <span className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${isDbFallbackLocal ? 'bg-amber-500' : 'bg-emerald-500'} animate-pulse`} />
+                      Estado: {isDbFallbackLocal ? "Modo Local (Banco desconectado)" : "Banco de Dados Conectado"}
+                    </span>
+                    <p className="text-[9.5px] text-slate-400">Garante a escrita forçada dos {records.length} registros no MySQL.</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const confirmSync = window.confirm(`Deseja sincronizar e gravar forçadamente todos os ${records.length} registros ativos com o banco de dados da Hostinger? Isso atualizará a base de dados imediatamente.`);
+                      if (!confirmSync) return;
+                      const success = await syncWithDatabase(records);
+                      if (success) {
+                        showToast("Sincronização manual concluída! Dados gravados com sucesso no banco de dados.", "success");
+                      }
+                    }}
+                    disabled={syncing}
+                    className="flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white py-1.5 px-3 rounded-lg text-[11px] font-sans font-bold transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                  >
+                    {syncing ? (
+                      <>
+                        <span className="animate-spin border-2 border-white/30 border-t-white rounded-full w-3 h-3" />
+                        <span>Sincronizando...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 size={12} />
+                        <span>Salvar Todos os Dados no Banco SQL</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="border-t border-slate-800 pt-4 space-y-3">

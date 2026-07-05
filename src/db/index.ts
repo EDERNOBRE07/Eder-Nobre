@@ -26,6 +26,19 @@ let mysqlPoolInstance: any = null;
 
 if (isMySQL) {
   console.log("[Database] Initializing MySQL/MariaDB connection pool...");
+  
+  // Detect if we are on Hostinger (indicated by a Unix socket or Passenger PORT)
+  const isHostinger = typeof process.env.PORT === 'string' && (
+    process.env.PORT.includes('passenger') || 
+    process.env.PORT.startsWith('/')
+  );
+
+  let targetHost = process.env.SQL_HOST || '127.0.0.1';
+  if (isHostinger && targetHost !== '127.0.0.1' && targetHost !== 'localhost') {
+    console.log(`[Database] Hostinger environment detected. Converting remote host '${targetHost}' to 'localhost' for direct local connection.`);
+    targetHost = 'localhost';
+  }
+
   const mysqlConfig: any = {
     user: process.env.SQL_USER,
     password: process.env.SQL_PASSWORD,
@@ -33,14 +46,15 @@ if (isMySQL) {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    connectTimeout: 2000, // 2 seconds connect timeout to prevent long Passenger blocking / 503 errors
     ssl: process.env.SQL_SSL === 'true' ? { rejectUnauthorized: false } : undefined
   };
 
-  if (process.env.SQL_HOST && process.env.SQL_HOST.startsWith('/')) {
-    mysqlConfig.socketPath = process.env.SQL_HOST;
-    console.log(`[Database] Connecting via Unix socket: ${process.env.SQL_HOST}`);
+  if (targetHost.startsWith('/')) {
+    mysqlConfig.socketPath = targetHost;
+    console.log(`[Database] Connecting via Unix socket: ${targetHost}`);
   } else {
-    mysqlConfig.host = process.env.SQL_HOST || '127.0.0.1';
+    mysqlConfig.host = targetHost;
     mysqlConfig.port = process.env.SQL_PORT ? parseInt(process.env.SQL_PORT, 10) : 3306;
     console.log(`[Database] Connecting via TCP: ${mysqlConfig.host}:${mysqlConfig.port}`);
   }
