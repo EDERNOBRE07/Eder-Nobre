@@ -123,6 +123,15 @@ app.use((req, res, next) => {
   next();
 });
 
+// Disable caching for all API routes to ensure state updates (like backup imports) are immediately visible in the dashboard
+app.use("/api", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  next();
+});
+
 // Body parser with 20MB limit to handle files/extracted text
 app.use(express.json({ limit: "20mb" }));
 

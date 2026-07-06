@@ -509,8 +509,8 @@ export default function App() {
       // Fetch DB status concurrently for UI accuracy
       fetchDbStatus();
       
-      // 1. Fetch Records
-      const recRes = await fetch("/api/records", {
+      // 1. Fetch Records (with cache-busting timestamp to prevent stale dashboard rendering)
+      const recRes = await fetch(`/api/records?t=${Date.now()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (recRes.status === 401) {
@@ -539,8 +539,8 @@ export default function App() {
         // integrateWithGoogleCloudDb(recData, token);
       }
 
-      // 2. Fetch Logs
-      const logRes = await fetch("/api/logs", {
+      // 2. Fetch Logs (with cache-busting timestamp)
+      const logRes = await fetch(`/api/logs?t=${Date.now()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (logRes.status === 401) {
@@ -572,7 +572,7 @@ export default function App() {
     if (!token) return;
     setLoadingDbStatus(true);
     try {
-      const res = await fetch("/api/db-status", {
+      const res = await fetch(`/api/db-status?t=${Date.now()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
