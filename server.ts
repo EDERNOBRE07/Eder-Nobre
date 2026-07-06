@@ -39,12 +39,23 @@ import {
   runLocalDataRecovery
 } from "./src/lib/firestore-service.ts";
 
+const getAppRoot = () => {
+  if (gDirname) {
+    if (gDirname.endsWith("dist") || gDirname.endsWith("dist/")) {
+      return path.resolve(gDirname, "..");
+    }
+    return gDirname;
+  }
+  return process.cwd();
+};
+const appRoot = getAppRoot();
+
 // Local storage fallback files
-const RECORDS_FILE = path.join(process.cwd(), "records-store.json");
-const LOGS_FILE = path.join(process.cwd(), "logs-store.json");
+const RECORDS_FILE = path.join(appRoot, "records-store.json");
+const LOGS_FILE = path.join(appRoot, "logs-store.json");
 
 // Tracks the last database source successfully written to during replaceAll
-const LAST_SOURCE_FILE = path.join(process.cwd(), "last-source-store.json");
+const LAST_SOURCE_FILE = path.join(appRoot, "last-source-store.json");
 
 function getLastWrittenSource(): string {
   if (fs.existsSync(LAST_SOURCE_FILE)) {

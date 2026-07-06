@@ -1,9 +1,31 @@
 import { dbFirestore } from "./firebase-admin.ts";
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
 
-const RECORDS_FILE = path.join(process.cwd(), "records-store.json");
-const LOGS_FILE = path.join(process.cwd(), "logs-store.json");
+const gFilename = typeof __filename !== "undefined"
+  ? __filename
+  : (typeof import.meta !== "undefined" && import.meta.url ? fileURLToPath(import.meta.url) : "");
+const gDirname = typeof __dirname !== "undefined"
+  ? __dirname
+  : (gFilename ? path.dirname(gFilename) : process.cwd());
+
+const getAppRoot = () => {
+  if (gDirname) {
+    if (gDirname.includes("src/lib") || gDirname.includes("src\\lib")) {
+      return path.resolve(gDirname, "..", "..");
+    }
+    if (gDirname.endsWith("dist") || gDirname.endsWith("dist/")) {
+      return path.resolve(gDirname, "..");
+    }
+    return gDirname;
+  }
+  return process.cwd();
+};
+const appRoot = getAppRoot();
+
+const RECORDS_FILE = path.join(appRoot, "records-store.json");
+const LOGS_FILE = path.join(appRoot, "logs-store.json");
 
 // Detect if we are in Google Cloud and there is an active PostgreSQL Cloud SQL instance socket
 const cloudSqlHost = process.env.SQL_HOST;
