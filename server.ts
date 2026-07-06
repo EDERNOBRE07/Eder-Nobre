@@ -759,27 +759,9 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
 // -------------------------------------------------------------
 
 async function startServer() {
-  let isPostgresActive = false;
   const dbType = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
-  // Bootstrap tables and test connection to Database at boot time
-  try {
-    console.log(`[Database] Testing connection to ${dbType} on host:`, process.env.SQL_HOST);
-    await bootstrapDb();
-    // Standard fast query to verify database and table availability
-    await db.select().from(records).limit(1);
-    console.log(`[Database] Successfully connected to ${dbType} and tables verified!`);
-    isPostgresActive = true;
-  } catch (err: any) {
-    console.error(`[Database] Failed to connect or bootstrap ${dbType}. Fallback Cloud Firestore and JSON files will be used. Error details:`, err.message || err);
-  }
 
-  // Run automatic data recovery routine to migrate local JSON stores to Cloud Firestore & Postgres!
-  try {
-    await runLocalDataRecovery(isPostgresActive ? db : null, records, executionLogs);
-  } catch (recErr: any) {
-    console.error("[Recovery System] Failed to complete data recovery routine:", recErr.message || recErr);
-  }
-
+  // 1. Mount Vite middleware or production static file handler first (synchronous / high speed)
   if (process.env.NODE_ENV !== "production") {
     // Mount Vite in middleware mode during development
     const vite = await createViteServer({
@@ -796,6 +778,7 @@ async function startServer() {
     });
   }
 
+  // 2. Start listening on the port immediately to respond to load balancers, orchestrators, and Passenger, preventing 503 timeouts
   if (typeof PORT === "string") {
     app.listen(PORT, () => {
       console.log(`Server running on Unix socket: ${PORT}`);
@@ -805,6 +788,28 @@ async function startServer() {
       console.log(`Server running on http://0.0.0.0:${PORT}`);
     });
   }
+
+  // 3. Perform database connection testing, table bootstrapping, and data recovery asynchronously in the background
+  (async () => {
+    let isDbActive = false;
+    try {
+      console.log(`[Database] Asynchronously testing connection to ${dbType} on host:`, process.env.SQL_HOST);
+      await bootstrapDb();
+      // Standard fast query to verify database and table availability
+      await db.select().from(records).limit(1);
+      console.log(`[Database] Successfully connected to ${dbType} and tables verified!`);
+      isDbActive = true;
+    } catch (err: any) {
+      console.error(`[Database] Failed to connect or bootstrap ${dbType}. Fallback Cloud Firestore and JSON files will be used. Error details:`, err.message || err);
+    }
+
+    // Run automatic data recovery routine to migrate local JSON stores to Cloud Firestore & database
+    try {
+      await runLocalDataRecovery(isDbActive ? db : null, records, executionLogs);
+    } catch (recErr: any) {
+      console.error("[Recovery System] Failed to complete data recovery routine:", recErr.message || recErr);
+    }
+  })();
 }
 
 startServer();
