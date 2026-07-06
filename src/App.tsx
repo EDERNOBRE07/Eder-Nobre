@@ -515,7 +515,10 @@ export default function App() {
       // Sincronização automática ao logar com o Google (usuários reais, não convidados anônimos)
       const currentUserObj = user || auth.currentUser;
       if (currentUserObj && !currentUserObj.isAnonymous && currentUserObj.uid !== "fallback-anonymous-user") {
-        integrateWithGoogleCloudDb(recData, token);
+        // Desativado a sincronização automática em segundo plano para evitar que o banco de dados de desenvolvimento (GCP)
+        // contamine ou reverta as alterações, exclusões ou importação de backup efetuadas de forma legítima no MySQL da Hostinger.
+        // A migração de dados é feita de forma muito mais segura e limpa usando a ferramenta manual de Importação/Exportação JSON.
+        // integrateWithGoogleCloudDb(recData, token);
       }
 
       // 2. Fetch Logs
