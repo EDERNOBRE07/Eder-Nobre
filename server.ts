@@ -5,8 +5,18 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as dotenv from "dotenv";
 
-// Load environment variables from .env
-dotenv.config();
+// Load environment variables from .env using multiple fallback paths to support different runtime CWDs (such as Hostinger Passenger cPanel)
+const envPaths = [
+  path.resolve(process.cwd(), ".env"),
+  path.resolve(__dirname, "..", ".env"),
+  path.resolve(__dirname, ".env"),
+];
+for (const envPath of envPaths) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    break;
+  }
+}
 
 // Initialize DB pool and connection
 import { db, bootstrapDb, pool, isMySQL } from "./src/db/index.ts";
@@ -344,6 +354,12 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
 
     const email = req.user?.email || "anonymous";
 
+    const safeDate = (d: any): Date => {
+      if (!d) return new Date();
+      const date = new Date(d);
+      return isNaN(date.getTime()) ? new Date() : date;
+    };
+
     // 1. Format fields correctly for DB inserts
     const formattedRecords = newRecordsList.map((r: any) => ({
       id: r.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
@@ -356,7 +372,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       recursos: r.recursos ? String(r.recursos) : "0",
       status: r.status || "Em Tramitação",
       observacoes: r.observacoes || "",
-      createdAt: r.createdAt ? new Date(r.createdAt) : (r.created_at ? new Date(r.created_at) : new Date()),
+      createdAt: safeDate(r.createdAt || r.created_at),
     }));
 
     // 2. Deduplicate by ID to prevent primary key constraint violations

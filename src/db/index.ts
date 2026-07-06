@@ -1,5 +1,19 @@
 import * as dotenv from 'dotenv';
-dotenv.config();
+import * as path from 'path';
+import * as fs from 'fs';
+
+// Load .env using multiple fallback paths to support different runtime CWDs (such as Hostinger Passenger cPanel)
+const envPaths = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(__dirname, '..', '.env'),
+  path.resolve(__dirname, '.env'),
+];
+for (const envPath of envPaths) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    break;
+  }
+}
 
 import { drizzle as pgDrizzle } from 'drizzle-orm/node-postgres';
 import { drizzle as mysqlDrizzle } from 'drizzle-orm/mysql2';
@@ -7,8 +21,6 @@ import pkg from 'pg';
 const { Pool } = pkg;
 import mysql from 'mysql2/promise';
 import * as schema from './schema.ts';
-
-import * as fs from 'fs';
 
 // Detect if we are in Google Cloud/AI Studio and there is an active PostgreSQL Cloud SQL instance socket
 const cloudSqlHost = process.env.SQL_HOST;
@@ -60,94 +72,110 @@ if (isMySQL) {
 
   mysqlPoolInstance = mysql.createPool(mysqlConfig);
 
-  // Wrap pool methods to automatically fallback to localhost on connection failure
+  // Wrap pool methods to automatically fallback to localhost or Unix socket on connection failure
   const originalGetConnection = mysqlPoolInstance.getConnection;
   const originalQuery = mysqlPoolInstance.query;
   const originalExecute = mysqlPoolInstance.execute;
 
   let activePool = mysqlPoolInstance;
+  let fallbackAttempted = false;
 
-  mysqlPoolInstance.getConnection = async function(...args: any[]) {
+  async function testAndGetActivePool(): Promise<any> {
+    if (activePool !== mysqlPoolInstance) {
+      return activePool;
+    }
+    
     try {
-      if (activePool === mysqlPoolInstance) {
-        return await originalGetConnection.apply(mysqlPoolInstance, args);
-      } else {
-        return await activePool.getConnection(...args);
-      }
+      // Test the current primary pool connection
+      const conn = await originalGetConnection.apply(mysqlPoolInstance);
+      conn.release();
+      return mysqlPoolInstance;
     } catch (err: any) {
+      if (fallbackAttempted) {
+        throw err;
+      }
+      fallbackAttempted = true;
+      console.warn(`[Database] Primary MySQL connection failed: ${err.message || err}. Initiating auto-fallback sequence...`);
+      
+      // Fallback 1: Try TCP localhost if primary host was configured as something else
       if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
-        console.warn(`[Database] Connection to ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
+        console.log("[Database] Fallback Sequence 1: Trying connection via TCP on 'localhost'...");
         const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
         try {
           const fallbackPool = mysql.createPool(fallbackConfig);
           const conn = await fallbackPool.getConnection();
+          conn.release();
           activePool = fallbackPool;
-          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for connections.");
-          return conn;
-        } catch (fallbackErr: any) {
-          console.error("[Database] Fallback to 'localhost' also failed:", fallbackErr.message || fallbackErr);
-          throw err;
+          console.log("[Database] Fallback to 'localhost' TCP connection succeeded!");
+          return activePool;
+        } catch (fbErr: any) {
+          console.warn("[Database] Fallback to 'localhost' TCP connection failed:", fbErr.message || fbErr);
         }
-      } else {
-        throw err;
       }
+      
+      // Fallback 2: Try common local Unix sockets (essential for Hostinger cPanel Node/Passenger environments)
+      console.log("[Database] Fallback Sequence 2: Attempting common Hostinger Unix sockets...");
+      const socketPaths = [
+        '/var/lib/mysql/mysql.sock',
+        '/tmp/mysql.sock',
+        '/var/run/mysqld/mysqld.sock'
+      ];
+      
+      for (const socketPath of socketPaths) {
+        if (fs.existsSync(socketPath)) {
+          console.log(`[Database] Found Unix socket file at '${socketPath}'. Connecting...`);
+          const fallbackSocketConfig = {
+            user: mysqlConfig.user,
+            password: mysqlConfig.password,
+            database: mysqlConfig.database,
+            socketPath: socketPath,
+            waitForConnections: true,
+            connectionLimit: 10,
+            queueLimit: 0,
+            connectTimeout: 2000
+          };
+          try {
+            const fallbackPool = mysql.createPool(fallbackSocketConfig);
+            const conn = await fallbackPool.getConnection();
+            conn.release();
+            activePool = fallbackPool;
+            console.log(`[Database] Fallback to Unix socket at '${socketPath}' succeeded!`);
+            return activePool;
+          } catch (socketErr: any) {
+            console.warn(`[Database] Fallback to Unix socket at '${socketPath}' failed:`, socketErr.message || socketErr);
+          }
+        }
+      }
+      
+      console.error("[Database] All MySQL fallbacks exhausted. The database connection cannot be established.");
+      throw err;
+    }
+  }
+
+  mysqlPoolInstance.getConnection = async function(...args: any[]) {
+    const poolToUse = await testAndGetActivePool();
+    if (poolToUse === mysqlPoolInstance) {
+      return await originalGetConnection.apply(mysqlPoolInstance, args);
+    } else {
+      return await poolToUse.getConnection(...args);
     }
   };
 
   mysqlPoolInstance.query = async function(...args: any[]) {
-    try {
-      if (activePool === mysqlPoolInstance) {
-        return await originalQuery.apply(mysqlPoolInstance, args);
-      } else {
-        return await activePool.query(...args);
-      }
-    } catch (err: any) {
-      if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
-        console.warn(`[Database] Query on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
-        const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
-        try {
-          const fallbackPool = mysql.createPool(fallbackConfig);
-          // Test fallback pool
-          const conn = await fallbackPool.getConnection();
-          conn.release();
-          activePool = fallbackPool;
-          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for queries.");
-          return await activePool.query(...args);
-        } catch (fallbackErr: any) {
-          console.error("[Database] Fallback to 'localhost' failed during query:", fallbackErr.message || fallbackErr);
-          throw err;
-        }
-      } else {
-        throw err;
-      }
+    const poolToUse = await testAndGetActivePool();
+    if (poolToUse === mysqlPoolInstance) {
+      return await originalQuery.apply(mysqlPoolInstance, args);
+    } else {
+      return await poolToUse.query(...args);
     }
   };
 
   mysqlPoolInstance.execute = async function(...args: any[]) {
-    try {
-      if (activePool === mysqlPoolInstance) {
-        return await originalExecute.apply(mysqlPoolInstance, args);
-      } else {
-        return await activePool.execute(...args);
-      }
-    } catch (err: any) {
-      if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
-        console.warn(`[Database] Execute on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
-        const fallbackConfig = { ...mysqlConfig, host: 'localhost' };
-        try {
-          const fallbackPool = mysql.createPool(fallbackConfig);
-          const conn = await fallbackPool.getConnection();
-          conn.release();
-          activePool = fallbackPool;
-          console.log("[Database] Fallback to 'localhost' succeeded! Replaced active pool for execute.");
-          return await activePool.execute(...args);
-        } catch (fallbackErr: any) {
-          console.error("[Database] Fallback to 'localhost' failed during execute:", fallbackErr.message || fallbackErr);
-          throw err;
-        }
-      } else {
-        throw err;
-      }
+    const poolToUse = await testAndGetActivePool();
+    if (poolToUse === mysqlPoolInstance) {
+      return await originalExecute.apply(mysqlPoolInstance, args);
+    } else {
+      return await poolToUse.execute(...args);
     }
   };
 } else {
@@ -288,6 +316,7 @@ export async function bootstrapDb() {
         }).filter(Boolean);
         
         const colsToVerify = [
+          { name: "deputado", type: "TEXT NOT NULL" },
           { name: "cidade", type: "TEXT" },
           { name: "projeto_lei", type: "TEXT" },
           { name: "emenda", type: "TEXT" },
@@ -320,6 +349,7 @@ export async function bootstrapDb() {
 
         await upgradeColumn("sector", "TEXT NOT NULL");
         await upgradeColumn("data", "TEXT NOT NULL");
+        await upgradeColumn("deputado", "TEXT NOT NULL");
         await upgradeColumn("cidade", "TEXT");
         await upgradeColumn("recursos", "TEXT");
         await upgradeColumn("status", "TEXT");
