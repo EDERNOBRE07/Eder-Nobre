@@ -69,7 +69,11 @@ if (isMySQL) {
 
   mysqlPoolInstance.getConnection = async function(...args: any[]) {
     try {
-      return await originalGetConnection.apply(activePool, args);
+      if (activePool === mysqlPoolInstance) {
+        return await originalGetConnection.apply(mysqlPoolInstance, args);
+      } else {
+        return await activePool.getConnection(...args);
+      }
     } catch (err: any) {
       if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
         console.warn(`[Database] Connection to ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
@@ -92,7 +96,11 @@ if (isMySQL) {
 
   mysqlPoolInstance.query = async function(...args: any[]) {
     try {
-      return await originalQuery.apply(activePool, args);
+      if (activePool === mysqlPoolInstance) {
+        return await originalQuery.apply(mysqlPoolInstance, args);
+      } else {
+        return await activePool.query(...args);
+      }
     } catch (err: any) {
       if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
         console.warn(`[Database] Query on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);
@@ -117,7 +125,11 @@ if (isMySQL) {
 
   mysqlPoolInstance.execute = async function(...args: any[]) {
     try {
-      return await originalExecute.apply(activePool, args);
+      if (activePool === mysqlPoolInstance) {
+        return await originalExecute.apply(mysqlPoolInstance, args);
+      } else {
+        return await activePool.execute(...args);
+      }
     } catch (err: any) {
       if (mysqlConfig.host && mysqlConfig.host !== 'localhost' && mysqlConfig.host !== '127.0.0.1') {
         console.warn(`[Database] Execute on ${mysqlConfig.host} failed (${err.message || err}). Trying fallback to 'localhost'...`);

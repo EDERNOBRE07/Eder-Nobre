@@ -450,7 +450,7 @@ export default function App() {
       if (newlyImported > 0) {
         console.log(`[Integração] Mesclando bancos. Encontrados ${newlyImported} novos registros no Google Cloud. Gravando no MySQL da Hostinger...`);
         const success = await syncWithDatabase(finalMergedList);
-        if (success) {
+        if (success && !success.startsWith("local-json")) {
           showToast(`Integração automática: ${newlyImported} novos registros do Google Cloud integrados no seu MySQL!`, "success");
           setRecords(finalMergedList);
         }
@@ -846,7 +846,7 @@ export default function App() {
           setRecords((prevRecords) => {
             const combined = [...prevRecords, ...taggedNew];
             syncWithDatabase(combined).then((success) => {
-              if (success) {
+              if (success && !success.startsWith("local-json")) {
                 setImportSessionItems((prev) =>
                   prev.map((i) =>
                     i.id === item.id
@@ -1294,7 +1294,7 @@ export default function App() {
     const combined = [...records, ...stagedRecords];
     
     const success = await syncWithDatabase(combined);
-    if (success) {
+    if (success && !success.startsWith("local-json")) {
       setRecords(combined);
       setStagedRecords([]);
       setImportSessionItems([]);
