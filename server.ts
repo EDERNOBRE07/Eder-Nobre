@@ -221,28 +221,83 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
   const dbType = isMySQL ? "MySQL" : "PostgreSQL";
   const dbSource = isMySQL ? "mysql" : "postgres";
 
+  // If the last write went to a fallback because of SQL issues, respect that source for reads to guarantee consistency.
+  if (lastWrittenSource === "local-json") {
+    console.log("[Database Read] Serving from Local JSON because it was the last successfully written source.");
+    const localRecords = readLocalRecords();
+    res.setHeader("X-Database-Source", "fallback-local");
+    return res.json(localRecords);
+  } else if (lastWrittenSource === "firestore") {
+    console.log("[Database Read] Serving from Firestore because it was the last successfully written source.");
+    try {
+      const fsRecords = await fetchFirestoreRecords();
+      res.setHeader("X-Database-Source", "firestore");
+      return res.json(fsRecords);
+    } catch (fsErr: any) {
+      console.warn("[Database Read] Firestore read failed, falling back to SQL...", fsErr.message || fsErr);
+    }
+  }
+
   try {
     const allRecords = await db.select().from(records);
     
     // Self-healing safety check: if SQL is connected but returns 0 records,
-    // check if we have data in Firestore or local JSON store (e.g. from previous failover sync).
+    // check if we have data in Firestore or local JSON store, and restore them back to SQL.
     if (allRecords.length === 0) {
+      let recordsToRestore: any[] = [];
+      let sourceName = "";
+
       try {
         const fsRecords = await fetchFirestoreRecords();
         if (fsRecords.length > 0) {
-          console.log(`[Database Fallback/Self-Healing] SQL returned 0 records, but Cloud Firestore has ${fsRecords.length} records. Serving from Firestore.`);
-          res.setHeader("X-Database-Source", "firestore-fallback");
-          return res.json(fsRecords);
+          recordsToRestore = fsRecords;
+          sourceName = "Cloud Firestore";
         }
       } catch (fsErr: any) {
         // Silently continue to local check
       }
-      
-      const localRecords = readLocalRecords();
-      if (localRecords.length > 0) {
-        console.log(`[Database Fallback/Self-Healing] SQL returned 0 records, but Local JSON has ${localRecords.length} records. Serving from Local JSON fallback.`);
-        res.setHeader("X-Database-Source", "fallback-local-sync");
-        return res.json(localRecords);
+
+      if (recordsToRestore.length === 0) {
+        const localRecords = readLocalRecords();
+        if (localRecords.length > 0) {
+          recordsToRestore = localRecords;
+          sourceName = "Local JSON file";
+        }
+      }
+
+      if (recordsToRestore.length > 0) {
+        console.log(`[Database Self-Healing] SQL returned 0 records, but ${sourceName} has ${recordsToRestore.length} records. Restoring SQL database...`);
+        
+        // Asynchronously restore SQL database so we don't block the HTTP response
+        (async () => {
+          try {
+            const formatted = recordsToRestore.map((r: any) => ({
+              id: r.id || Math.random().toString(36).slice(2, 9),
+              sector: r.sector || "educacao",
+              data: r.data || new Date().toISOString().split("T")[0],
+              deputado: r.deputado || "",
+              cidade: r.cidade || "",
+              projetoLei: r.projeto_lei || r.projetoLei || "",
+              emenda: r.emenda || "",
+              recursos: r.recursos ? String(r.recursos) : "0",
+              status: r.status || "Em Tramitação",
+              observacoes: r.observacoes || "",
+              createdAt: r.createdAt ? new Date(r.createdAt) : (r.created_at ? new Date(r.created_at) : new Date()),
+            }));
+
+            const batchSize = 100;
+            for (let i = 0; i < formatted.length; i += batchSize) {
+              const batch = formatted.slice(i, i + batchSize);
+              await db.insert(records).values(batch);
+            }
+            console.log(`[Database Self-Healing] Successfully restored ${formatted.length} records into the empty SQL database from ${sourceName}.`);
+          } catch (healErr: any) {
+            console.error("[Database Self-Healing] Failed to auto-heal empty SQL database:", healErr.message || healErr);
+          }
+        })();
+
+        res.setHeader("X-Database-Source", sourceName === "Cloud Firestore" ? "firestore-fallback" : "fallback-local-sync");
+        return res.json(recordsToRestore);
       }
     }
 

@@ -70,15 +70,20 @@ export async function saveFirestoreRecords(newRecords: any[]): Promise<void> {
     console.log(`[Firestore Service] Saving ${newRecords.length} records...`);
     const collectionRef = dbFirestore.collection("records");
     
-    // Batch delete existing records to keep it clean (atomic replacement)
+    // Batch delete existing records to keep it clean (atomic replacement) in chunks of 400
     const snapshot = await collectionRef.get();
     if (snapshot.size > 0) {
-      const batch = dbFirestore.batch();
-      snapshot.forEach((doc) => {
-        batch.delete(doc.ref);
-      });
-      await batch.commit();
-      console.log("[Firestore Service] Cleaned up previous records.");
+      const docs = snapshot.docs;
+      const deleteBatchSize = 400;
+      for (let i = 0; i < docs.length; i += deleteBatchSize) {
+        const chunk = docs.slice(i, i + deleteBatchSize);
+        const batch = dbFirestore.batch();
+        chunk.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        await batch.commit();
+      }
+      console.log(`[Firestore Service] Cleaned up ${snapshot.size} previous records.`);
     } else {
       console.log("[Firestore Service] No previous records to clean up in Firestore.");
     }
