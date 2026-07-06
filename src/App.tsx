@@ -624,11 +624,13 @@ export default function App() {
 
       if (resJson.local) {
         showToast("Dados salvos localmente! (Aviso: Banco de Dados SQL desconectado)", "info");
+        await fetchData(); // Reload to obtain updated logs and confirmed records
+        return `local-json: ${resJson.error || "Banco de dados desconectado ou inativo"}`;
       } else {
         showToast(`Dados sincronizados com o banco de dados ${resJson.database ? resJson.database.toUpperCase() : "SQL"}!`, "success");
+        await fetchData(); // Reload to obtain updated logs and confirmed records
+        return resJson.database || "sql";
       }
-      await fetchData(); // Reload to obtain updated logs and confirmed records
-      return resJson.database || "sql";
     } catch (err: any) {
       console.error("Sync failed:", err);
       showToast("Falha ao salvar no SQL: " + err.message, "error");
@@ -3584,8 +3586,9 @@ export default function App() {
                       if (!confirmSync) return;
                       const dbTarget = await syncWithDatabase(records);
                       if (dbTarget) {
-                        if (dbTarget === "local-json") {
-                          showToast("Aviso: Sincronização falhou no banco SQL. Dados salvos apenas em arquivo local.", "error");
+                        if (dbTarget.startsWith("local-json")) {
+                          const dbError = dbTarget.includes(": ") ? dbTarget.split(": ")[1] : "";
+                          showToast(`Aviso: Sincronização falhou no banco SQL. Erro: ${dbError || "banco desconectado ou inativo"}. Dados salvos localmente.`, "error");
                         } else {
                           showToast(`Sincronização manual concluída! Dados gravados no banco de dados ${dbTarget.toUpperCase()} com sucesso.`, "success");
                         }
@@ -3659,8 +3662,9 @@ export default function App() {
                             const dbTarget = await syncWithDatabase(importedRecords);
                             if (dbTarget) {
                               setRecords(importedRecords);
-                              if (dbTarget === "local-json") {
-                                showToast("Backup restaurado localmente, mas FALHOU ao gravar no Banco SQL. Dados salvos apenas em arquivo local temporário.", "error");
+                              if (dbTarget.startsWith("local-json")) {
+                                const dbError = dbTarget.includes(": ") ? dbTarget.split(": ")[1] : "";
+                                showToast(`Backup restaurado localmente, mas FALHOU ao gravar no Banco SQL. Erro: ${dbError || "banco desconectado ou inativo"}. Salvo em arquivo local.`, "error");
                               } else {
                                 showToast(`Backup de Dados restaurado e gravado no banco ${dbTarget.toUpperCase()} com sucesso!`, "success");
                               }

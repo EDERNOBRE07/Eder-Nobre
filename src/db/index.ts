@@ -242,14 +242,14 @@ export async function bootstrapDb() {
       await client.query(`
         CREATE TABLE IF NOT EXISTS records (
           id VARCHAR(255) PRIMARY KEY,
-          sector VARCHAR(255) NOT NULL,
-          data VARCHAR(255) NOT NULL,
+          sector TEXT NOT NULL,
+          data TEXT NOT NULL,
           deputado TEXT NOT NULL,
-          cidade VARCHAR(255),
+          cidade TEXT,
           projeto_lei TEXT,
           emenda TEXT,
-          recursos VARCHAR(255),
-          status VARCHAR(255),
+          recursos TEXT,
+          status TEXT,
           observacoes TEXT,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -269,8 +269,11 @@ export async function bootstrapDb() {
       // Verify columns in existing tables and upgrade varchar columns to TEXT to avoid data too long/truncation errors
       try {
         const result: any = await client.query("SHOW COLUMNS FROM records");
-        const columns = result.rows || [];
-        const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
+        const columns = result?.rows || (Array.isArray(result) ? result : []);
+        const existingColumns = columns.map((c: any) => {
+          const name = c?.Field || c?.field || c?.COLUMN_NAME || c?.column_name || "";
+          return name.toLowerCase();
+        }).filter(Boolean);
         
         const colsToVerify = [
           { name: "cidade", type: "TEXT" },
@@ -285,25 +288,43 @@ export async function bootstrapDb() {
         for (const col of colsToVerify) {
           if (!existingColumns.includes(col.name.toLowerCase())) {
             console.log(`[Database Bootstrap] Adding missing column '${col.name}' to 'records'...`);
-            await client.query(`ALTER TABLE records ADD COLUMN ${col.name} ${col.type}`);
+            try {
+              await client.query(`ALTER TABLE records ADD COLUMN ${col.name} ${col.type}`);
+            } catch (err: any) {
+              console.warn(`[Database Bootstrap] Failed to add column '${col.name}':`, err.message || err);
+            }
           }
         }
 
         // Safe upgrade of columns to TEXT to handle long values (such as multiple cities or longer status names)
-        console.log("[Database Bootstrap] Upgrading records table columns to TEXT to prevent truncation...");
-        await client.query("ALTER TABLE records MODIFY COLUMN sector TEXT NOT NULL");
-        await client.query("ALTER TABLE records MODIFY COLUMN data TEXT NOT NULL");
-        await client.query("ALTER TABLE records MODIFY COLUMN cidade TEXT");
-        await client.query("ALTER TABLE records MODIFY COLUMN recursos TEXT");
-        await client.query("ALTER TABLE records MODIFY COLUMN status TEXT");
+        console.log("[Database Bootstrap] Upgrading records table columns to TEXT individually to prevent truncation...");
+        const upgradeColumn = async (colName: string, colDef: string) => {
+          try {
+            await client.query(`ALTER TABLE records MODIFY COLUMN ${colName} ${colDef}`);
+          } catch (err: any) {
+            console.warn(`[Database Bootstrap] Safe modify column '${colName}' failed:`, err.message || err);
+          }
+        };
+
+        await upgradeColumn("sector", "TEXT NOT NULL");
+        await upgradeColumn("data", "TEXT NOT NULL");
+        await upgradeColumn("cidade", "TEXT");
+        await upgradeColumn("recursos", "TEXT");
+        await upgradeColumn("status", "TEXT");
+        await upgradeColumn("projeto_lei", "TEXT");
+        await upgradeColumn("emenda", "TEXT");
+        await upgradeColumn("observacoes", "TEXT");
       } catch (verErr: any) {
         console.warn("[Database Bootstrap] records column verification/upgrade failed:", verErr.message || verErr);
       }
 
       try {
         const result: any = await client.query("SHOW COLUMNS FROM execution_logs");
-        const columns = result.rows || [];
-        const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
+        const columns = result?.rows || (Array.isArray(result) ? result : []);
+        const existingColumns = columns.map((c: any) => {
+          const name = c?.Field || c?.field || c?.COLUMN_NAME || c?.column_name || "";
+          return name.toLowerCase();
+        }).filter(Boolean);
         
         const colsToVerify = [
           { name: "details", type: "TEXT" },
@@ -313,7 +334,11 @@ export async function bootstrapDb() {
         for (const col of colsToVerify) {
           if (!existingColumns.includes(col.name.toLowerCase())) {
             console.log(`[Database Bootstrap] Adding missing column '${col.name}' to 'execution_logs'...`);
-            await client.query(`ALTER TABLE execution_logs ADD COLUMN ${col.name} ${col.type}`);
+            try {
+              await client.query(`ALTER TABLE execution_logs ADD COLUMN ${col.name} ${col.type}`);
+            } catch (err: any) {
+              console.warn(`[Database Bootstrap] Failed to add column '${col.name}' to execution_logs:`, err.message || err);
+            }
           }
         }
       } catch (verErr: any) {

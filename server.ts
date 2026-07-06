@@ -433,15 +433,28 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         } catch (fsErr: any) {
           console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
           
-          // Save log entry to logs-store.json
+          // Save SQL and Firestore failures as ERROR log
           addLocalLog(
             "SYNC_RECORDS",
-            "SUCCESS",
-            `[Fallback Local] Substituição de registros em arquivo local. Total salvos: ${uniqueFormattedRecords.length}`,
+            "ERROR",
+            `Falha ao salvar no SQL: ${directError.message || String(directError)}. Falha no Firestore: ${fsErr.message || String(fsErr)}`,
+            email
+          );
+          
+          addLocalLog(
+            "SYNC_RECORDS",
+            "INFO",
+            `[Fallback Local] Substituição de registros em arquivo local bem sucedida. Total salvos: ${uniqueFormattedRecords.length}`,
             email
           );
 
-          res.json({ success: true, count: uniqueFormattedRecords.length, database: "local-json", local: true });
+          res.json({ 
+            success: true, 
+            count: uniqueFormattedRecords.length, 
+            database: "local-json", 
+            local: true,
+            error: directError.message || String(directError)
+          });
         }
       }
     }
