@@ -344,7 +344,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
 
     const email = req.user?.email || "anonymous";
 
-    // Format fields correctly for DB inserts
+    // 1. Format fields correctly for DB inserts
     const formattedRecords = newRecordsList.map((r: any) => ({
       id: r.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
       sector: r.sector || "educacao",
@@ -358,17 +358,29 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       observacoes: r.observacoes || "",
     }));
 
+    // 2. Deduplicate by ID to prevent primary key constraint violations
+    const uniqueRecordsMap = new Map<string, any>();
+    formattedRecords.forEach((r: any) => {
+      if (r.id) {
+        uniqueRecordsMap.set(r.id, r);
+      }
+    });
+    const uniqueFormattedRecords = Array.from(uniqueRecordsMap.values());
+
+    // 3. Always save to local JSON file first so that local-json is kept completely synchronized
+    writeLocalRecords(uniqueFormattedRecords);
+
     try {
       await db.transaction(async (tx) => {
         // 1. Delete existing records
         await tx.delete(records);
 
         // 2. Insert new records if any
-        if (formattedRecords.length > 0) {
-          // Handle insertion in batches of 50 to avoid parameter limit issues in pg
+        if (uniqueFormattedRecords.length > 0) {
+          // Handle insertion in batches of 50 to avoid parameter limit issues
           const batchSize = 50;
-          for (let i = 0; i < formattedRecords.length; i += batchSize) {
-            const batch = formattedRecords.slice(i, i + batchSize);
+          for (let i = 0; i < uniqueFormattedRecords.length; i += batchSize) {
+            const batch = uniqueFormattedRecords.slice(i, i + batchSize);
             await tx.insert(records).values(batch);
           }
         }
@@ -377,22 +389,22 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         await tx.insert(executionLogs).values({
           action: "SYNC_RECORDS",
           status: "SUCCESS",
-          details: `Substituição atômica de todos os registros. Total de registros salvos: ${formattedRecords.length}`,
+          details: `Substituição atômica de todos os registros. Total de registros salvos: ${uniqueFormattedRecords.length}`,
           userEmail: email,
         });
       });
 
-      res.json({ success: true, count: formattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
+      res.json({ success: true, count: uniqueFormattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
     } catch (dbError: any) {
       console.warn("[Database Fallback] SQL transaction failed. Trying direct non-transactional execution instead. Reason:", dbError.message || dbError);
       
       try {
         // Direct non-transactional execution as first-tier SQL fallback (crucial for some Hostinger MySQL environments)
         await db.delete(records);
-        if (formattedRecords.length > 0) {
+        if (uniqueFormattedRecords.length > 0) {
           const batchSize = 50;
-          for (let i = 0; i < formattedRecords.length; i += batchSize) {
-            const batch = formattedRecords.slice(i, i + batchSize);
+          for (let i = 0; i < uniqueFormattedRecords.length; i += batchSize) {
+            const batch = uniqueFormattedRecords.slice(i, i + batchSize);
             await db.insert(records).values(batch);
           }
         }
@@ -400,38 +412,35 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         await db.insert(executionLogs).values({
           action: "SYNC_RECORDS",
           status: "SUCCESS",
-          details: `Substituição direta (não-transacional) de todos os registros. Total salvos: ${formattedRecords.length}`,
+          details: `Substituição direta (não-transacional) de todos os registros. Total salvos: ${uniqueFormattedRecords.length}`,
           userEmail: email,
         });
 
-        res.json({ success: true, count: formattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
+        res.json({ success: true, count: uniqueFormattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
       } catch (directError: any) {
         console.error("[Database Fallback] SQL direct fallback also failed. Saving to Cloud Firestore instead. Reason:", directError.message || directError);
         
         try {
-          await saveFirestoreRecords(formattedRecords);
+          await saveFirestoreRecords(uniqueFormattedRecords);
           await addFirestoreLog(
             "SYNC_RECORDS",
             "SUCCESS",
-            `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${formattedRecords.length}`,
+            `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${uniqueFormattedRecords.length}`,
             email
           );
-          res.json({ success: true, count: formattedRecords.length, database: "firestore" });
+          res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
         } catch (fsErr: any) {
-          console.error("[Database Fallback] Cloud Firestore write failed. Saving to local JSON as ultimate fallback:", fsErr.message || fsErr);
-          
-          // Save formatted records directly to records-store.json
-          writeLocalRecords(formattedRecords);
+          console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
           
           // Save log entry to logs-store.json
           addLocalLog(
             "SYNC_RECORDS",
             "SUCCESS",
-            `[Fallback Local] Substituição de registros em arquivo local. Total salvos: ${formattedRecords.length}`,
+            `[Fallback Local] Substituição de registros em arquivo local. Total salvos: ${uniqueFormattedRecords.length}`,
             email
           );
 
-          res.json({ success: true, count: formattedRecords.length, database: "local-json", local: true });
+          res.json({ success: true, count: uniqueFormattedRecords.length, database: "local-json", local: true });
         }
       }
     }

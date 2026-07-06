@@ -265,6 +265,59 @@ export async function bootstrapDb() {
           user_email VARCHAR(255)
         );
       `);
+
+      // Verify columns in existing tables and upgrade varchar columns to TEXT to avoid data too long/truncation errors
+      try {
+        const [columns]: any = await client.query("SHOW COLUMNS FROM records");
+        const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
+        
+        const colsToVerify = [
+          { name: "cidade", type: "TEXT" },
+          { name: "projeto_lei", type: "TEXT" },
+          { name: "emenda", type: "TEXT" },
+          { name: "recursos", type: "TEXT" },
+          { name: "status", type: "TEXT" },
+          { name: "observacoes", type: "TEXT" },
+          { name: "created_at", type: "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" }
+        ];
+
+        for (const col of colsToVerify) {
+          if (!existingColumns.includes(col.name.toLowerCase())) {
+            console.log(`[Database Bootstrap] Adding missing column '${col.name}' to 'records'...`);
+            await client.query(`ALTER TABLE records ADD COLUMN ${col.name} ${col.type}`);
+          }
+        }
+
+        // Safe upgrade of columns to TEXT to handle long values (such as multiple cities or longer status names)
+        console.log("[Database Bootstrap] Upgrading records table columns to TEXT to prevent truncation...");
+        await client.query("ALTER TABLE records MODIFY COLUMN sector TEXT NOT NULL");
+        await client.query("ALTER TABLE records MODIFY COLUMN data TEXT NOT NULL");
+        await client.query("ALTER TABLE records MODIFY COLUMN cidade TEXT");
+        await client.query("ALTER TABLE records MODIFY COLUMN recursos TEXT");
+        await client.query("ALTER TABLE records MODIFY COLUMN status TEXT");
+      } catch (verErr: any) {
+        console.warn("[Database Bootstrap] records column verification/upgrade failed:", verErr.message || verErr);
+      }
+
+      try {
+        const [columns]: any = await client.query("SHOW COLUMNS FROM execution_logs");
+        const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
+        
+        const colsToVerify = [
+          { name: "details", type: "TEXT" },
+          { name: "user_email", type: "VARCHAR(255)" }
+        ];
+
+        for (const col of colsToVerify) {
+          if (!existingColumns.includes(col.name.toLowerCase())) {
+            console.log(`[Database Bootstrap] Adding missing column '${col.name}' to 'execution_logs'...`);
+            await client.query(`ALTER TABLE execution_logs ADD COLUMN ${col.name} ${col.type}`);
+          }
+        }
+      } catch (verErr: any) {
+        console.warn("[Database Bootstrap] execution_logs column verification failed:", verErr.message || verErr);
+      }
+
     } else {
       // Create PostgreSQL tables
       await client.query(`
@@ -302,6 +355,35 @@ export async function bootstrapDb() {
           user_email TEXT
         );
       `);
+
+      // Verify columns in existing tables for PG
+      try {
+        const result = await client.query(`
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_name = 'records'
+        `);
+        const existingColumns = result.rows.map((r: any) => r.column_name.toLowerCase());
+        
+        const colsToVerify = [
+          { name: "cidade", type: "TEXT" },
+          { name: "projeto_lei", type: "TEXT" },
+          { name: "emenda", type: "TEXT" },
+          { name: "recursos", type: "TEXT" },
+          { name: "status", type: "TEXT" },
+          { name: "observacoes", type: "TEXT" },
+          { name: "created_at", type: "TIMESTAMP DEFAULT NOW()" }
+        ];
+
+        for (const col of colsToVerify) {
+          if (!existingColumns.includes(col.name.toLowerCase())) {
+            console.log(`[Database Bootstrap] Adding missing column '${col.name}' to 'records' (PG)...`);
+            await client.query(`ALTER TABLE records ADD COLUMN ${col.name} ${col.type}`);
+          }
+        }
+      } catch (verErr: any) {
+        console.warn("[Database Bootstrap] PG column verification failed:", verErr.message || verErr);
+      }
     }
     
     console.log("[Database Bootstrap] Tables verified/created successfully.");
