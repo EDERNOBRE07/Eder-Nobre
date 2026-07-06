@@ -3784,7 +3784,8 @@ export default function App() {
 
                             const dbTarget = await syncWithDatabase(importedRecords);
                             if (dbTarget) {
-                              setRecords(importedRecords);
+                              // Sincronização e recarga efetuadas pelo syncWithDatabase via fetchData() automático,
+                              // garantindo que o estado local reflita exatamente o que foi gravado e validado no servidor.
                               if (dbTarget.startsWith("local-json")) {
                                 const dbError = dbTarget.includes(": ") ? dbTarget.split(": ")[1] : "";
                                 showToast(`Backup restaurado localmente, mas FALHOU ao gravar no Banco SQL. Erro: ${dbError || "banco desconectado ou inativo"}. Salvo em arquivo local.`, "error");

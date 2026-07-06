@@ -379,14 +379,43 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       createdAt: safeDate(r.createdAt || r.created_at),
     }));
 
-    // 2. Deduplicate by ID to prevent primary key constraint violations
-    const uniqueRecordsMap = new Map<string, any>();
-    formattedRecords.forEach((r: any) => {
-      if (r.id) {
-        uniqueRecordsMap.set(r.id, r);
+    // 2. Deduplicate/re-key to prevent primary key collisions but retain distinct records
+    const uniqueFormattedRecords: any[] = [];
+    const seenIds = new Set<string>();
+    const seenContentSignatures = new Set<string>();
+
+    for (const r of formattedRecords) {
+      // Content signature to detect identical duplicates
+      const signature = [
+        r.sector,
+        r.data,
+        r.deputado,
+        r.cidade,
+        r.projetoLei,
+        r.emenda,
+        r.recursos,
+        r.status,
+        r.observacoes
+      ].map(v => String(v || "").trim().toLowerCase()).join("||");
+
+      if (seenContentSignatures.has(signature)) {
+        // Skip identical duplicate
+        continue;
       }
-    });
-    const uniqueFormattedRecords = Array.from(uniqueRecordsMap.values());
+      seenContentSignatures.add(signature);
+
+      // Resolve ID collision: assign a new ID if it already exists
+      let finalId = r.id;
+      if (seenIds.has(finalId)) {
+        finalId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        while (seenIds.has(finalId)) {
+          finalId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        }
+        r.id = finalId;
+      }
+      seenIds.add(finalId);
+      uniqueFormattedRecords.push(r);
+    }
 
     // 3. Always save to local JSON file first so that local-json is kept completely synchronized
     writeLocalRecords(uniqueFormattedRecords);
