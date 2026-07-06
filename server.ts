@@ -471,6 +471,14 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
     // 3. Always save to local JSON file first so that local-json is kept completely synchronized
     writeLocalRecords(uniqueFormattedRecords);
 
+    // 4. Always save to Cloud Firestore as the dual-write backup database to prevent database drift and state reversion
+    try {
+      await saveFirestoreRecords(uniqueFormattedRecords);
+      console.log(`[Database Sync] Successfully mirrored ${uniqueFormattedRecords.length} records to Cloud Firestore.`);
+    } catch (fsErr: any) {
+      console.error(`[Database Sync] Cloud Firestore mirroring failed:`, fsErr.message || fsErr);
+    }
+
     const activeDbEngine = isMySQL ? "mysql" : "postgres";
     const dbType = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
 

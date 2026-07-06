@@ -175,6 +175,8 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
 
     let recoveredToFsCount = 0;
     let recoveredToPgCount = 0;
+    let fsAlreadyInSync = false;
+    let pgAlreadyInSync = false;
 
     // 1. Recover to Firestore (Permanent Fallback Cloud Database)
     try {
@@ -200,6 +202,7 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
         );
       } else {
         console.log("[Recovery System] All local records already exist in Firestore fallback.");
+        fsAlreadyInSync = true;
       }
     } catch (fsErr: any) {
       console.error("[Recovery System] Error writing recovery data to Firestore:", fsErr.message || fsErr);
@@ -249,6 +252,7 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
           });
         } else {
           console.log(`[Recovery System] All local records already exist in ${dbEngineName} database.`);
+          pgAlreadyInSync = true;
         }
       } catch (pgErr: any) {
         console.log(`[Recovery System] ${dbEngineName} recovery skipped or failed:`, pgErr.message || pgErr);
@@ -287,7 +291,7 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
 
     // 4. Limpa arquivos locais APENAS se as operações de migração foram feitas com segurança para alguma das nuvens
     // Se ambas as gravações falharem (bancos completamente inacessíveis no boot), preservamos os arquivos JSON locais para a próxima oportunidade.
-    const recoveredSomewhere = recoveredToFsCount > 0 || recoveredToPgCount > 0 || (localRecs.length === 0);
+    const recoveredSomewhere = recoveredToFsCount > 0 || recoveredToPgCount > 0 || (localRecs.length === 0) || (fsAlreadyInSync && (!dbPostgres || pgAlreadyInSync));
     
     if (recoveredSomewhere) {
       try {
