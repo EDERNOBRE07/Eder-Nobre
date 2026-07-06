@@ -132,11 +132,7 @@ function getGeminiClient(req?: express.Request): GoogleGenAI {
 
   // Detect Google Cloud OAuth Access Tokens (which start with 'AQ.' or 'ya29.')
   if (key.startsWith("AQ.") || key.startsWith("ya29.")) {
-    throw new Error(
-      `O valor inserido começa com '${key.slice(0, 3)}', que identifica um token de acesso OAuth temporário (expira em 60 minutos) e não uma chave permanente. ` +
-      `Para o funcionamento correto e duradouro, você precisa usar uma Chave de API (API Key) permanente que começa com 'AIzaSy'. ` +
-      `Acesse o site oficial Google AI Studio (https://aistudio.google.com/), faça login, clique em 'Get API Key' (Obter chave de API) e depois em 'Create API Key' (Criar chave de API) para gerar uma chave permanente válida.`
-    );
+    console.log(`[Gemini Client] Usando Token de Acesso OAuth temporário (começa com: ${key.slice(0, 3)}...)`);
   }
   
   console.log(`[Gemini Client] Initializing client. Key ends in: ...${key.slice(-6)}`);
@@ -324,9 +320,9 @@ app.post("/api/logs/add", requireAuth, async (req: AuthRequest, res) => {
       details: detailsStr,
       userEmail: email,
     });
-    res.json({ success: true, database: "postgres" });
+    res.json({ success: true, database: isMySQL ? "mysql" : "postgres" });
   } catch (err: any) {
-    console.warn("[Database Fallback] Postgres inactive/error. Falling back to Cloud Firestore for logging. Reason:", err.message || err);
+    console.warn("[Database Fallback] SQL database inactive/error. Falling back to Cloud Firestore for logging. Reason:", err.message || err);
     try {
       await addFirestoreLog(actionStr, statusStr, detailsStr, email);
       res.json({ success: true, database: "firestore" });
@@ -386,34 +382,57 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         });
       });
 
-      res.json({ success: true, count: formattedRecords.length, database: "postgres" });
+      res.json({ success: true, count: formattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
     } catch (dbError: any) {
-      console.warn("[Database Fallback] Postgres transaction failed. Saving to Cloud Firestore instead. Reason:", dbError.message || dbError);
+      console.warn("[Database Fallback] SQL transaction failed. Trying direct non-transactional execution instead. Reason:", dbError.message || dbError);
       
       try {
-        await saveFirestoreRecords(formattedRecords);
-        await addFirestoreLog(
-          "SYNC_RECORDS",
-          "SUCCESS",
-          `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${formattedRecords.length}`,
-          email
-        );
-        res.json({ success: true, count: formattedRecords.length, database: "firestore" });
-      } catch (fsErr: any) {
-        console.error("[Database Fallback] Cloud Firestore write failed. Saving to local JSON as ultimate fallback:", fsErr.message || fsErr);
+        // Direct non-transactional execution as first-tier SQL fallback (crucial for some Hostinger MySQL environments)
+        await db.delete(records);
+        if (formattedRecords.length > 0) {
+          const batchSize = 50;
+          for (let i = 0; i < formattedRecords.length; i += batchSize) {
+            const batch = formattedRecords.slice(i, i + batchSize);
+            await db.insert(records).values(batch);
+          }
+        }
         
-        // Save formatted records directly to records-store.json
-        writeLocalRecords(formattedRecords);
-        
-        // Save log entry to logs-store.json
-        addLocalLog(
-          "SYNC_RECORDS",
-          "SUCCESS",
-          `[Fallback Local] Substituição de registros em arquivo local. Total salvos: ${formattedRecords.length}`,
-          email
-        );
+        await db.insert(executionLogs).values({
+          action: "SYNC_RECORDS",
+          status: "SUCCESS",
+          details: `Substituição direta (não-transacional) de todos os registros. Total salvos: ${formattedRecords.length}`,
+          userEmail: email,
+        });
 
-        res.json({ success: true, count: formattedRecords.length, database: "local-json", local: true });
+        res.json({ success: true, count: formattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
+      } catch (directError: any) {
+        console.error("[Database Fallback] SQL direct fallback also failed. Saving to Cloud Firestore instead. Reason:", directError.message || directError);
+        
+        try {
+          await saveFirestoreRecords(formattedRecords);
+          await addFirestoreLog(
+            "SYNC_RECORDS",
+            "SUCCESS",
+            `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${formattedRecords.length}`,
+            email
+          );
+          res.json({ success: true, count: formattedRecords.length, database: "firestore" });
+        } catch (fsErr: any) {
+          console.error("[Database Fallback] Cloud Firestore write failed. Saving to local JSON as ultimate fallback:", fsErr.message || fsErr);
+          
+          // Save formatted records directly to records-store.json
+          writeLocalRecords(formattedRecords);
+          
+          // Save log entry to logs-store.json
+          addLocalLog(
+            "SYNC_RECORDS",
+            "SUCCESS",
+            `[Fallback Local] Substituição de registros em arquivo local. Total salvos: ${formattedRecords.length}`,
+            email
+          );
+
+          res.json({ success: true, count: formattedRecords.length, database: "local-json", local: true });
+        }
       }
     }
   } catch (error: any) {

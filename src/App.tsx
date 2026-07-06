@@ -620,7 +620,7 @@ export default function App() {
       setIsDbFallbackLocal(!!resJson.local);
 
       if (resJson.local) {
-        showToast("Dados salvos localmente! (Aviso: Banco PostgreSQL desconectado)", "info");
+        showToast("Dados salvos localmente! (Aviso: Banco de Dados SQL desconectado)", "info");
       } else {
         showToast("Dados sincronizados com o banco de dados SQL!", "success");
       }
@@ -3476,7 +3476,7 @@ export default function App() {
 
               <div className="border-t border-slate-800 pt-4 space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="font-semibold text-slate-200">Status do Banco de Dados PostgreSQL</h4>
+                  <h4 className="font-semibold text-slate-200">Status do Banco de Dados SQL (MySQL/PostgreSQL)</h4>
                   <button 
                     onClick={fetchDbStatus} 
                     disabled={loadingDbStatus}
