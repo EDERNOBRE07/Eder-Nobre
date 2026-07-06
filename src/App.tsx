@@ -3782,6 +3782,9 @@ export default function App() {
                             const confirmImport = window.confirm(`ATENÇÃO: Deseja importar os ${importedRecords.length} registros contidos neste arquivo? Isso irá substituir permanentemente todos os registros atuais do banco de dados ativo!`);
                             if (!confirmImport) return;
 
+                            // Atualiza o estado local imediatamente na interface para garantir feedback instantâneo
+                            setRecords(importedRecords);
+
                             const dbTarget = await syncWithDatabase(importedRecords);
                             if (dbTarget) {
                               // Sincronização e recarga efetuadas pelo syncWithDatabase via fetchData() automático,
