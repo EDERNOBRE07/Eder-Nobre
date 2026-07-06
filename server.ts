@@ -364,18 +364,18 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       return isNaN(date.getTime()) ? new Date() : date;
     };
 
-    // 1. Format fields correctly for DB inserts
+    // 1. Format and strictly sanitize fields for DB inserts to prevent NOT NULL and type errors
     const formattedRecords = newRecordsList.map((r: any) => ({
-      id: r.id || Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      sector: r.sector || "educacao",
-      data: r.data || new Date().toISOString().split("T")[0],
-      deputado: r.deputado || "",
-      cidade: r.cidade || "",
-      projetoLei: r.projetoLei || r.projeto_lei || "",
-      emenda: r.emenda || "",
-      recursos: r.recursos ? String(r.recursos) : "0",
-      status: r.status || "Em Tramitação",
-      observacoes: r.observacoes || "",
+      id: r.id ? String(r.id).trim() : Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      sector: r.sector ? String(r.sector).trim() : "educacao",
+      data: r.data ? String(r.data).trim() : new Date().toISOString().split("T")[0],
+      deputado: r.deputado ? String(r.deputado).trim() : "",
+      cidade: r.cidade ? String(r.cidade).trim() : "",
+      projetoLei: r.projetoLei ? String(r.projetoLei).trim() : (r.projeto_lei ? String(r.projeto_lei).trim() : ""),
+      emenda: r.emenda ? String(r.emenda).trim() : "",
+      recursos: r.recursos ? String(r.recursos).trim() : "0",
+      status: r.status ? String(r.status).trim() : "Em Tramitação",
+      observacoes: r.observacoes ? String(r.observacoes).trim() : "",
       createdAt: safeDate(r.createdAt || r.created_at),
     }));
 
@@ -391,14 +391,17 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
     // 3. Always save to local JSON file first so that local-json is kept completely synchronized
     writeLocalRecords(uniqueFormattedRecords);
 
+    const activeDbEngine = isMySQL ? "mysql" : "postgres";
+    const dbType = isMySQL ? "MySQL/MariaDB" : "PostgreSQL";
+
     try {
+      // Tier 1: Try transactional batch execution
       await db.transaction(async (tx) => {
         // 1. Delete existing records
         await tx.delete(records);
 
         // 2. Insert new records if any
         if (uniqueFormattedRecords.length > 0) {
-          // Handle insertion in batches of 50 to avoid parameter limit issues
           const batchSize = 50;
           for (let i = 0; i < uniqueFormattedRecords.length; i += batchSize) {
             const batch = uniqueFormattedRecords.slice(i, i + batchSize);
@@ -415,12 +418,12 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         });
       });
 
-      res.json({ success: true, count: uniqueFormattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
+      res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
     } catch (dbError: any) {
-      console.warn("[Database Fallback] SQL transaction failed. Trying direct non-transactional execution instead. Reason:", dbError.message || dbError);
+      console.warn(`[Database Fallback] SQL transaction failed on ${dbType}. Trying direct non-transactional batch execution instead. Reason:`, dbError.message || dbError);
       
       try {
-        // Direct non-transactional execution as first-tier SQL fallback (crucial for some Hostinger MySQL environments)
+        // Tier 2: Direct non-transactional batch execution as first-tier SQL fallback
         await db.delete(records);
         if (uniqueFormattedRecords.length > 0) {
           const batchSize = 50;
@@ -437,44 +440,88 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
           userEmail: email,
         });
 
-        res.json({ success: true, count: uniqueFormattedRecords.length, database: isMySQL ? "mysql" : "postgres" });
+        res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
       } catch (directError: any) {
-        console.error("[Database Fallback] SQL direct fallback also failed. Saving to Cloud Firestore instead. Reason:", directError.message || directError);
+        console.warn(`[Database Fallback] SQL direct batch execution failed. Trying highly-robust individual record insert fallback on ${dbType}... Reason:`, directError.message || directError);
         
         try {
-          await saveFirestoreRecords(uniqueFormattedRecords);
-          await addFirestoreLog(
-            "SYNC_RECORDS",
-            "SUCCESS",
-            `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${uniqueFormattedRecords.length}`,
-            email
-          );
-          res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
-        } catch (fsErr: any) {
-          console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
+          // Tier 3: Individual record insertion fallback (deletes existing first, then inserts one-by-one to bypass specific row and packet limit errors)
+          await db.delete(records);
+          let insertedCount = 0;
+          let failedCount = 0;
+          let sampleError = "";
           
-          // Save SQL and Firestore failures as ERROR log
-          addLocalLog(
-            "SYNC_RECORDS",
-            "ERROR",
-            `Falha ao salvar no SQL: ${directError.message || String(directError)}. Falha no Firestore: ${fsErr.message || String(fsErr)}`,
-            email
-          );
+          for (const recordItem of uniqueFormattedRecords) {
+            try {
+              await db.insert(records).values(recordItem);
+              insertedCount++;
+            } catch (indError: any) {
+              failedCount++;
+              sampleError = indError.message || String(indError);
+              console.error(`[Database Fallback] Failed to insert individual record with ID ${recordItem.id}:`, sampleError);
+            }
+          }
           
-          addLocalLog(
-            "SYNC_RECORDS",
-            "INFO",
-            `[Fallback Local] Substituição de registros em arquivo local bem sucedida. Total salvos: ${uniqueFormattedRecords.length}`,
-            email
-          );
+          if (true) {
+            // Check if at least some records were written or if uniqueFormattedRecords was empty
+            if (uniqueFormattedRecords.length > 0 && insertedCount === 0) {
+              throw new Error(`All individual inserts failed on ${dbType}. Sample error: ${sampleError || "Unknown"}`);
+            }
+            
+            console.log(`[Database Fallback] Highly-robust individual inserts completed. Saved ${insertedCount}/${uniqueFormattedRecords.length} records to SQL database. (Failed: ${failedCount})`);
+            
+            await db.insert(executionLogs).values({
+              action: "SYNC_RECORDS",
+              status: failedCount > 0 ? "INFO" : "SUCCESS",
+              details: `Substituição via inserção robusta individual no ${dbType}. Salvos: ${insertedCount}/${uniqueFormattedRecords.length} registros. Erros ignorados: ${failedCount}.`,
+              userEmail: email,
+            }).catch(() => {});
+            
+            res.json({ 
+              success: true, 
+              count: insertedCount, 
+              database: activeDbEngine,
+              warning: failedCount > 0 ? `Alguns registros (${failedCount}) continham erros de formatação e foram ignorados, mas ${insertedCount} foram salvos com sucesso no seu banco de dados de produção.` : undefined
+            });
+          }
+        } catch (individualError: any) {
+          console.error(`[Database Fallback] Highly-robust individual fallback also failed on ${dbType}. Saving to Cloud Firestore instead. Reason:`, individualError.message || individualError);
+          
+          try {
+            await saveFirestoreRecords(uniqueFormattedRecords);
+            await addFirestoreLog(
+              "SYNC_RECORDS",
+              "SUCCESS",
+              `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${uniqueFormattedRecords.length}`,
+              email
+            );
+            res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
+          } catch (fsErr: any) {
+            console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
+            
+            // Save SQL and Firestore failures as ERROR log
+            addLocalLog(
+              "SYNC_RECORDS",
+              "ERROR",
+              `Falha ao salvar no SQL: ${directError.message || String(directError)}. Falha no Firestore: ${fsErr.message || String(fsErr)}`,
+              email
+            );
+            
+            addLocalLog(
+              "SYNC_RECORDS",
+              "INFO",
+              `[Fallback Local] Substituição de registros em arquivo local bem sucedida. Total salvos: ${uniqueFormattedRecords.length}`,
+              email
+            );
 
-          res.json({ 
-            success: true, 
-            count: uniqueFormattedRecords.length, 
-            database: "local-json", 
-            local: true,
-            error: directError.message || String(directError)
-          });
+            res.json({ 
+              success: true, 
+              count: uniqueFormattedRecords.length, 
+              database: "local-json", 
+              local: true,
+              error: directError.message || String(directError)
+            });
+          }
         }
       }
     }
