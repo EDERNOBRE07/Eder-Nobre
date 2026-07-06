@@ -268,7 +268,8 @@ export async function bootstrapDb() {
 
       // Verify columns in existing tables and upgrade varchar columns to TEXT to avoid data too long/truncation errors
       try {
-        const [columns]: any = await client.query("SHOW COLUMNS FROM records");
+        const result: any = await client.query("SHOW COLUMNS FROM records");
+        const columns = result.rows || [];
         const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
         
         const colsToVerify = [
@@ -300,7 +301,8 @@ export async function bootstrapDb() {
       }
 
       try {
-        const [columns]: any = await client.query("SHOW COLUMNS FROM execution_logs");
+        const result: any = await client.query("SHOW COLUMNS FROM execution_logs");
+        const columns = result.rows || [];
         const existingColumns = columns.map((c: any) => c.Field.toLowerCase());
         
         const colsToVerify = [

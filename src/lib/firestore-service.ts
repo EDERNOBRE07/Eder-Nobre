@@ -229,6 +229,7 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
             recursos: r.recursos ? String(r.recursos) : "0",
             status: r.status || "Em Tramitação",
             observacoes: r.observacoes || "",
+            createdAt: r.createdAt ? new Date(r.createdAt) : (r.created_at ? new Date(r.created_at) : new Date()),
           }));
 
           const batchSize = 50;

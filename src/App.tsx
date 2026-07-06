@@ -598,10 +598,10 @@ export default function App() {
   }, [isSettingsModalOpen, token]);
 
   // Sync state back to SQL Server (atomic ReplaceAll snapshot save)
-  const syncWithDatabase = async (updatedRecordsList: DBRecord[]): Promise<boolean> => {
+  const syncWithDatabase = async (updatedRecordsList: DBRecord[]): Promise<string> => {
     if (!token) {
       showToast("Você precisa estar autenticado para salvar alterações.", "error");
-      return false;
+      return "";
     }
     setSyncing(true);
     try {
@@ -625,14 +625,14 @@ export default function App() {
       if (resJson.local) {
         showToast("Dados salvos localmente! (Aviso: Banco de Dados SQL desconectado)", "info");
       } else {
-        showToast("Dados sincronizados com o banco de dados SQL!", "success");
+        showToast(`Dados sincronizados com o banco de dados ${resJson.database ? resJson.database.toUpperCase() : "SQL"}!`, "success");
       }
       await fetchData(); // Reload to obtain updated logs and confirmed records
-      return true;
+      return resJson.database || "sql";
     } catch (err: any) {
       console.error("Sync failed:", err);
       showToast("Falha ao salvar no SQL: " + err.message, "error");
-      return false;
+      return "";
     } finally {
       setSyncing(false);
     }
@@ -3582,9 +3582,13 @@ export default function App() {
                     onClick={async () => {
                       const confirmSync = window.confirm(`Deseja sincronizar e gravar forçadamente todos os ${records.length} registros ativos com o banco de dados da Hostinger? Isso atualizará a base de dados imediatamente.`);
                       if (!confirmSync) return;
-                      const success = await syncWithDatabase(records);
-                      if (success) {
-                        showToast("Sincronização manual concluída! Dados gravados com sucesso no banco de dados.", "success");
+                      const dbTarget = await syncWithDatabase(records);
+                      if (dbTarget) {
+                        if (dbTarget === "local-json") {
+                          showToast("Aviso: Sincronização falhou no banco SQL. Dados salvos apenas em arquivo local.", "error");
+                        } else {
+                          showToast(`Sincronização manual concluída! Dados gravados no banco de dados ${dbTarget.toUpperCase()} com sucesso.`, "success");
+                        }
                       }
                     }}
                     disabled={syncing}
@@ -3652,10 +3656,14 @@ export default function App() {
                             const confirmImport = window.confirm(`ATENÇÃO: Deseja importar os ${importedRecords.length} registros contidos neste arquivo? Isso irá substituir permanentemente todos os registros atuais do banco de dados ativo!`);
                             if (!confirmImport) return;
 
-                            const success = await syncWithDatabase(importedRecords);
-                            if (success) {
+                            const dbTarget = await syncWithDatabase(importedRecords);
+                            if (dbTarget) {
                               setRecords(importedRecords);
-                              showToast("Banco de Dados restaurado e sincronizado com sucesso!", "success");
+                              if (dbTarget === "local-json") {
+                                showToast("Backup restaurado localmente, mas FALHOU ao gravar no Banco SQL. Dados salvos apenas em arquivo local temporário.", "error");
+                              } else {
+                                showToast(`Backup de Dados restaurado e gravado no banco ${dbTarget.toUpperCase()} com sucesso!`, "success");
+                              }
                             } else {
                               showToast("Erro ao sincronizar dados com o servidor.", "error");
                             }

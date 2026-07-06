@@ -356,6 +356,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       recursos: r.recursos ? String(r.recursos) : "0",
       status: r.status || "Em Tramitação",
       observacoes: r.observacoes || "",
+      createdAt: r.createdAt ? new Date(r.createdAt) : (r.created_at ? new Date(r.created_at) : new Date()),
     }));
 
     // 2. Deduplicate by ID to prevent primary key constraint violations

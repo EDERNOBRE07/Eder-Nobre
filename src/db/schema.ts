@@ -36,14 +36,14 @@ export const users = (isMySQL
 export const records = (isMySQL
   ? mysqlTable('records', {
       id: varchar('id', { length: 255 }).primaryKey(), // Unique string IDs
-      sector: varchar('sector', { length: 255 }).notNull(), // 'educacao', 'saude', 'seguranca', etc.
-      data: varchar('data', { length: 255 }).notNull(), // YYYY-MM-DD
+      sector: mysqlText('sector').notNull(), // 'educacao', 'saude', 'seguranca', etc.
+      data: mysqlText('data').notNull(), // YYYY-MM-DD
       deputado: mysqlText('deputado').notNull(), // The action text
-      cidade: varchar('cidade', { length: 255 }), // Municipality
+      cidade: mysqlText('cidade'), // Municipality
       projetoLei: mysqlText('projeto_lei'), // Project number & description
       emenda: mysqlText('emenda'), // Emenda info
-      recursos: varchar('recursos', { length: 255 }), // Stored as a decimal string to preserve values cleanly
-      status: varchar('status', { length: 255 }), // 'Em Tramitação', 'Aprovado', 'Vetado', 'Arquivado'
+      recursos: mysqlText('recursos'), // Stored as a decimal string to preserve values cleanly
+      status: mysqlText('status'), // 'Em Tramitação', 'Aprovado', 'Vetado', 'Arquivado'
       observacoes: mysqlText('observacoes'), // Notes
       createdAt: mysqlTimestamp('created_at').defaultNow(),
     })
