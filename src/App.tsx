@@ -3774,11 +3774,22 @@ export default function App() {
                         const reader = new FileReader();
                         reader.onload = async (evt) => {
                           try {
-                            const importedRecords = JSON.parse(evt.target?.result as string);
-                            if (!Array.isArray(importedRecords)) {
-                              showToast("Arquivo inválido. Esperado uma lista de registros.", "error");
+                            const importedData = JSON.parse(evt.target?.result as string);
+                            let importedRecords: any[] = [];
+
+                            if (Array.isArray(importedData)) {
+                              importedRecords = importedData;
+                            } else if (importedData && typeof importedData === "object") {
+                              if (Array.isArray(importedData.records)) {
+                                importedRecords = importedData.records;
+                              }
+                            }
+
+                            if (importedRecords.length === 0) {
+                              showToast("Arquivo de backup inválido ou vazio. Nenhum registro encontrado para importar.", "error");
                               return;
                             }
+
                             const confirmImport = window.confirm(`ATENÇÃO: Deseja importar os ${importedRecords.length} registros contidos neste arquivo? Isso irá substituir permanentemente todos os registros atuais do banco de dados ativo!`);
                             if (!confirmImport) return;
 

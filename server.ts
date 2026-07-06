@@ -210,6 +210,29 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
   const dbSource = isMySQL ? "mysql" : "postgres";
   try {
     const allRecords = await db.select().from(records);
+    
+    // Self-healing safety check: if SQL is connected but returns 0 records,
+    // check if we have data in Firestore or local JSON store (e.g. from previous failover sync).
+    if (allRecords.length === 0) {
+      try {
+        const fsRecords = await fetchFirestoreRecords();
+        if (fsRecords.length > 0) {
+          console.log(`[Database Fallback/Self-Healing] SQL returned 0 records, but Cloud Firestore has ${fsRecords.length} records. Serving from Firestore.`);
+          res.setHeader("X-Database-Source", "firestore-fallback");
+          return res.json(fsRecords);
+        }
+      } catch (fsErr: any) {
+        // Silently continue to local check
+      }
+      
+      const localRecords = readLocalRecords();
+      if (localRecords.length > 0) {
+        console.log(`[Database Fallback/Self-Healing] SQL returned 0 records, but Local JSON has ${localRecords.length} records. Serving from Local JSON fallback.`);
+        res.setHeader("X-Database-Source", "fallback-local-sync");
+        return res.json(localRecords);
+      }
+    }
+
     res.setHeader("X-Database-Source", dbSource);
     res.json(allRecords);
   } catch (error: any) {
@@ -233,6 +256,25 @@ app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
   const dbSource = isMySQL ? "mysql" : "postgres";
   try {
     const logs = await db.select().from(executionLogs).orderBy(desc(executionLogs.timestamp));
+    
+    // Self-healing safety check for logs
+    if (logs.length === 0) {
+      try {
+        const fsLogs = await fetchFirestoreLogs();
+        if (fsLogs.length > 0) {
+          res.setHeader("X-Database-Source", "firestore-fallback");
+          return res.json(fsLogs);
+        }
+      } catch (fsErr: any) {}
+      
+      const localLogs = readLocalLogs();
+      if (localLogs.length > 0) {
+        const sortedLogs = localLogs.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+        res.setHeader("X-Database-Source", "fallback-local-sync");
+        return res.json(sortedLogs);
+      }
+    }
+
     res.setHeader("X-Database-Source", dbSource);
     res.json(logs);
   } catch (error: any) {
