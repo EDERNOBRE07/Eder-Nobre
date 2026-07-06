@@ -289,25 +289,13 @@ export async function runLocalDataRecovery(dbPostgres: any, recordsTable: any, l
       }
     }
 
-    // 4. Limpa arquivos locais APENAS se as operações de migração foram feitas com segurança para alguma das nuvens
-    // Se ambas as gravações falharem (bancos completamente inacessíveis no boot), preservamos os arquivos JSON locais para a próxima oportunidade.
-    const recoveredSomewhere = recoveredToFsCount > 0 || recoveredToPgCount > 0 || (localRecs.length === 0) || (fsAlreadyInSync && (!dbPostgres || pgAlreadyInSync));
-    
-    if (recoveredSomewhere) {
-      try {
-        if (fs.existsSync(RECORDS_FILE)) {
-          fs.unlinkSync(RECORDS_FILE);
-          console.log("[Recovery System] Local records-store.json cleared after successful cloud migration/merge.");
-        }
-        if (fs.existsSync(LOGS_FILE)) {
-          fs.unlinkSync(LOGS_FILE);
-          console.log("[Recovery System] Local logs-store.json cleared after successful cloud migration/merge.");
-        }
-      } catch (cleanErr: any) {
-        console.warn("[Recovery System] Warning: could not clear local backup files:", cleanErr.message || cleanErr);
-      }
-    } else {
-      console.log("[Recovery System] Cloud databases were not writable. Preserving local backup JSON files for next boot.");
+    // 4. Mantém os arquivos locais como espelho permanente para garantir resiliência máxima.
+    // Nunca removemos os arquivos JSON locais. Isso garante que, se o SQL cair no futuro durante o runtime,
+    // sempre teremos o backup local intacto para a recuperação de desastres.
+    try {
+      console.log("[Recovery System] Local records-store.json and logs-store.json preserved as permanent offline mirrors.");
+    } catch (cleanErr: any) {
+      console.warn("[Recovery System] Warning during recovery reporting:", cleanErr.message || cleanErr);
     }
 
     console.log("[Recovery System] Data recovery execution completed.");

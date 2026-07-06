@@ -26,7 +26,7 @@ for (const envPath of envPaths) {
 import { db, bootstrapDb, pool, isMySQL } from "./src/db/index.ts";
 import { records, executionLogs } from "./src/db/schema.ts";
 import { requireAuth, AuthRequest } from "./src/middleware/auth.ts";
-import { desc } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 import {
   fetchFirestoreRecords,
   saveFirestoreRecords,
@@ -535,69 +535,131 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       console.warn(`[Database Fallback] SQL transaction failed on ${dbType}. Trying direct non-transactional batch execution instead. Reason:`, dbError.message || dbError);
       
       try {
-        // Tier 2: Direct non-transactional batch execution as first-tier SQL fallback
-        await db.delete(records);
-        if (uniqueFormattedRecords.length > 0) {
-          const batchSize = 50;
-          for (let i = 0; i < uniqueFormattedRecords.length; i += batchSize) {
-            const batch = uniqueFormattedRecords.slice(i, i + batchSize);
-            await db.insert(records).values(batch);
+        // Tier 2: Safe direct non-transactional differential sync (no full table wipe!)
+        console.log(`[Database Fallback] Running Tier 2 safe differential sync on ${dbType}...`);
+        
+        // 1. Fetch current IDs in the database
+        const currentRecords = await db.select({ id: records.id }).from(records);
+        const currentIds = currentRecords.map((r: any) => r.id);
+        const newIds = new Set(uniqueFormattedRecords.map((r: any) => r.id));
+        
+        // 2. Identify and delete only the obsolete records
+        const idsToDelete = currentIds.filter((id: any) => !newIds.has(id));
+        if (idsToDelete.length > 0) {
+          const deleteBatchSize = 50;
+          for (let i = 0; i < idsToDelete.length; i += deleteBatchSize) {
+            const batch = idsToDelete.slice(i, i + deleteBatchSize);
+            await db.delete(records).where(inArray(records.id, batch));
+          }
+          console.log(`[Database Fallback] Safely deleted ${idsToDelete.length} obsolete records.`);
+        }
+
+        // 3. Upsert (insert or update) each record individually to guarantee that we never fail on batch or type constraints
+        let insertedCount = 0;
+        let updatedCount = 0;
+
+        for (const recordItem of uniqueFormattedRecords) {
+          const existing = await db.select({ id: records.id }).from(records).where(eq(records.id, recordItem.id)).limit(1);
+          if (existing.length > 0) {
+            await db.update(records).set(recordItem).where(eq(records.id, recordItem.id));
+            updatedCount++;
+          } else {
+            await db.insert(records).values(recordItem);
+            insertedCount++;
           }
         }
         
         await db.insert(executionLogs).values({
           action: "SYNC_RECORDS",
           status: "SUCCESS",
-          details: `Substituição direta (não-transacional) de todos os registros. Total salvos: ${uniqueFormattedRecords.length}`,
+          details: `Substituição diferencial segura (não-transacional) de todos os registros. Inseridos: ${insertedCount}, Atualizados: ${updatedCount}, Deletados obsoletos: ${idsToDelete.length}. Total ativo: ${uniqueFormattedRecords.length}`,
           userEmail: email,
         });
 
         lastWrittenSource = activeDbEngine;
         res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
       } catch (directError: any) {
-        console.warn(`[Database Fallback] SQL direct batch execution failed. Trying highly-robust individual record insert fallback on ${dbType}... Reason:`, directError.message || directError);
+        console.warn(`[Database Fallback] SQL direct safe sync failed. Trying highly-robust individual record insert fallback on ${dbType}... Reason:`, directError.message || directError);
         
         try {
-          // Tier 3: Individual record insertion fallback (deletes existing first, then inserts one-by-one to bypass specific row and packet limit errors)
-          await db.delete(records);
+          // Tier 3: Row-by-Row resilient differential sync (every query is try-catched to isolate failures)
+          console.log(`[Database Fallback] Running Tier 3 row-by-row resilient sync on ${dbType}...`);
+          
+          let currentIds: string[] = [];
+          try {
+            const currentRecords = await db.select({ id: records.id }).from(records);
+            currentIds = currentRecords.map((r: any) => r.id);
+          } catch (selectErr: any) {
+            console.error("[Database Fallback] Failed to fetch current IDs, assuming empty for safe inserts:", selectErr.message || selectErr);
+          }
+
+          const newIds = new Set(uniqueFormattedRecords.map((r: any) => r.id));
+          const idsToDelete = currentIds.filter((id: any) => !newIds.has(id));
+
+          // 1. Safely delete obsolete records individually with try-catch
+          let deletedCount = 0;
+          for (const id of idsToDelete) {
+            try {
+              await db.delete(records).where(eq(records.id, id));
+              deletedCount++;
+            } catch (delErr: any) {
+              console.error(`[Database Fallback] Failed to delete obsolete record with ID ${id}:`, delErr.message || delErr);
+            }
+          }
+
+          // 2. Safely upsert records individually with try-catch
           let insertedCount = 0;
+          let updatedCount = 0;
           let failedCount = 0;
           let sampleError = "";
-          
+
           for (const recordItem of uniqueFormattedRecords) {
             try {
-              await db.insert(records).values(recordItem);
-              insertedCount++;
+              let exists = false;
+              try {
+                const existing = await db.select({ id: records.id }).from(records).where(eq(records.id, recordItem.id)).limit(1);
+                exists = existing.length > 0;
+              } catch (existErr) {
+                // If the check itself fails, assume false and try to insert
+              }
+
+              if (exists) {
+                await db.update(records).set(recordItem).where(eq(records.id, recordItem.id));
+                updatedCount++;
+              } else {
+                await db.insert(records).values(recordItem);
+                insertedCount++;
+              }
             } catch (indError: any) {
               failedCount++;
               sampleError = indError.message || String(indError);
-              console.error(`[Database Fallback] Failed to insert individual record with ID ${recordItem.id}:`, sampleError);
+              console.error(`[Database Fallback] Failed to upsert individual record with ID ${recordItem.id}:`, sampleError);
             }
           }
+
+          const totalSaved = insertedCount + updatedCount;
           
-          if (true) {
-            // Check if at least some records were written or if uniqueFormattedRecords was empty
-            if (uniqueFormattedRecords.length > 0 && insertedCount === 0) {
-              throw new Error(`All individual inserts failed on ${dbType}. Sample error: ${sampleError || "Unknown"}`);
-            }
-            
-            console.log(`[Database Fallback] Highly-robust individual inserts completed. Saved ${insertedCount}/${uniqueFormattedRecords.length} records to SQL database. (Failed: ${failedCount})`);
-            
-            await db.insert(executionLogs).values({
-              action: "SYNC_RECORDS",
-              status: failedCount > 0 ? "INFO" : "SUCCESS",
-              details: `Substituição via inserção robusta individual no ${dbType}. Salvos: ${insertedCount}/${uniqueFormattedRecords.length} registros. Erros ignorados: ${failedCount}.`,
-              userEmail: email,
-            }).catch(() => {});
-            
-            lastWrittenSource = activeDbEngine;
-            res.json({ 
-              success: true, 
-              count: insertedCount, 
-              database: activeDbEngine,
-              warning: failedCount > 0 ? `Alguns registros (${failedCount}) continham erros de formatação e foram ignorados, mas ${insertedCount} foram salvos com sucesso no seu banco de dados de produção.` : undefined
-            });
+          // Check if at least some records were successfully written (or if input list was empty)
+          if (uniqueFormattedRecords.length > 0 && totalSaved === 0) {
+            throw new Error(`All individual safe upserts failed on ${dbType}. Sample error: ${sampleError || "Unknown"}`);
           }
+
+          console.log(`[Database Fallback] Highly-resilient row-by-row sync completed. Saved ${totalSaved}/${uniqueFormattedRecords.length} records to SQL database. (Failed: ${failedCount}, Deleted obsolete: ${deletedCount})`);
+          
+          await db.insert(executionLogs).values({
+            action: "SYNC_RECORDS",
+            status: failedCount > 0 ? "INFO" : "SUCCESS",
+            details: `Substituição via upsert resiliente individual no ${dbType}. Salvos: ${totalSaved}/${uniqueFormattedRecords.length} registros (Inseridos: ${insertedCount}, Atualizados: ${updatedCount}, Deletados: ${deletedCount}). Erros ignorados: ${failedCount}.`,
+            userEmail: email,
+          }).catch(() => {});
+
+          lastWrittenSource = activeDbEngine;
+          res.json({ 
+            success: true, 
+            count: totalSaved, 
+            database: activeDbEngine,
+            warning: failedCount > 0 ? `Alguns registros (${failedCount}) continham erros e foram ignorados, mas ${totalSaved} foram gravados com sucesso na sua base de dados.` : undefined
+          });
         } catch (individualError: any) {
           console.error(`[Database Fallback] Highly-robust individual fallback also failed on ${dbType}. Saving to Cloud Firestore instead. Reason:`, individualError.message || individualError);
           
