@@ -104,6 +104,24 @@ export default function App() {
 
   // Database status tracking
   const [isDbFallbackLocal, setIsDbFallbackLocal] = useState(false);
+  interface LastSyncLog {
+    timestamp: string;
+    status: number | string;
+    ok: boolean;
+    database: string;
+    message: string;
+    recordsCount: number;
+    errorDetails?: string;
+  }
+  const [lastSyncLog, setLastSyncLog] = useState<LastSyncLog | null>(() => {
+    try {
+      const saved = localStorage.getItem("last_sync_log");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   interface DbStatus {
     connected: boolean;
     engine?: string;
@@ -604,8 +622,9 @@ export default function App() {
       return "";
     }
     setSyncing(true);
+    let response: Response | undefined;
     try {
-      const response = await fetch("/api/records/replaceAll", {
+      response = await fetch("/api/records/replaceAll", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -615,12 +634,46 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errObj = await response.json();
-        throw new Error(errObj.error || "HTTP " + response.status);
+        let errorMsg = "HTTP " + response.status;
+        try {
+          const errObj = await response.json();
+          errorMsg = errObj.error || errObj.message || errorMsg;
+        } catch (e) {
+          // Response is not JSON
+        }
+        
+        const logData: LastSyncLog = {
+          timestamp: new Date().toLocaleString("pt-BR"),
+          status: response.status,
+          ok: false,
+          database: "mysql",
+          message: `Falha na sincronização (HTTP ${response.status}).`,
+          recordsCount: updatedRecordsList.length,
+          errorDetails: errorMsg
+        };
+        setLastSyncLog(logData);
+        localStorage.setItem("last_sync_log", JSON.stringify(logData));
+
+        throw new Error(errorMsg);
       }
 
       const resJson = await response.json();
       setIsDbFallbackLocal(!!resJson.local);
+
+      const isSqlSuccess = !resJson.local && resJson.database !== "firestore";
+      const logData: LastSyncLog = {
+        timestamp: new Date().toLocaleString("pt-BR"),
+        status: response.status,
+        ok: isSqlSuccess,
+        database: resJson.database || "sql",
+        message: isSqlSuccess 
+          ? `Sincronização realizada com sucesso no banco de dados ${String(resJson.database).toUpperCase()}.` 
+          : `Falha na gravação do banco de dados MySQL/SQL. Dados salvos em modo de contingência (${resJson.database === "firestore" ? "Cloud Firestore" : "Local JSON"}).`,
+        recordsCount: updatedRecordsList.length,
+        errorDetails: resJson.error || (resJson.database === "firestore" ? "Conexão com SQL indisponível. Gravado em Cloud Firestore." : undefined)
+      };
+      setLastSyncLog(logData);
+      localStorage.setItem("last_sync_log", JSON.stringify(logData));
 
       if (resJson.local) {
         showToast("Dados salvos localmente! (Aviso: Banco de Dados SQL desconectado)", "info");
@@ -634,6 +687,21 @@ export default function App() {
     } catch (err: any) {
       console.error("Sync failed:", err);
       showToast("Falha ao salvar no SQL: " + err.message, "error");
+      
+      // If we didn't get a response (e.g. Network Error), save log here
+      if (!response) {
+        const logData: LastSyncLog = {
+          timestamp: new Date().toLocaleString("pt-BR"),
+          status: "Network Error",
+          ok: false,
+          database: "mysql",
+          message: `Falha ao conectar ao servidor de backend (Erro de Rede).`,
+          recordsCount: updatedRecordsList.length,
+          errorDetails: err.message || String(err)
+        };
+        setLastSyncLog(logData);
+        localStorage.setItem("last_sync_log", JSON.stringify(logData));
+      }
       return "";
     } finally {
       setSyncing(false);
@@ -3610,6 +3678,61 @@ export default function App() {
                     )}
                   </button>
                 </div>
+
+                {/* Visual Feedback for Last Sync Log */}
+                {lastSyncLog ? (
+                  <div className={`p-3 rounded-lg border text-[11px] font-sans space-y-2 ${
+                    lastSyncLog.ok 
+                      ? "bg-emerald-950/10 border-emerald-900/30 text-emerald-300" 
+                      : "bg-rose-950/15 border-rose-900/25 text-rose-300"
+                  }`}>
+                    <div className="flex items-center justify-between font-semibold border-b pb-1.5 border-slate-800/40">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${lastSyncLog.ok ? "bg-emerald-500 animate-pulse" : "bg-rose-500 animate-pulse"}`}></span>
+                        <span className="uppercase text-[10px] tracking-wider font-bold">
+                          {lastSyncLog.ok ? "Última Gravação SQL: SUCESSO" : "Última Gravação SQL: FALHA"}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        {lastSyncLog.timestamp}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                      <div>
+                        <span className="text-slate-500 block">Resposta HTTP:</span>
+                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                          String(lastSyncLog.status) === "200" 
+                            ? "bg-emerald-950 text-emerald-400 border border-emerald-900/40" 
+                            : "bg-rose-950 text-rose-400 border border-rose-900/40"
+                        }`}>
+                          HTTP {lastSyncLog.status}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Registros Enviados:</span>
+                        <span className="text-slate-200">{lastSyncLog.recordsCount} itens</span>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      {lastSyncLog.message}
+                    </p>
+
+                    {lastSyncLog.errorDetails && (
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-slate-500 font-semibold block">Mensagem de Erro do Backend:</span>
+                        <pre className="font-mono text-[10px] bg-slate-950 border border-rose-950/40 p-2 rounded text-rose-400 break-all whitespace-pre-wrap select-text leading-relaxed">
+                          {lastSyncLog.errorDetails}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="bg-slate-950/50 border border-slate-800/60 rounded-lg p-3 text-center text-[10.5px] text-slate-500 font-sans">
+                    Nenhuma tentativa de gravação forçada registrada nesta sessão ainda.
+                  </div>
+                )}
               </div>
 
               <div className="border-t border-slate-800 pt-4 space-y-3">
