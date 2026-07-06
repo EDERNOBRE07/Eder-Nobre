@@ -39,6 +39,9 @@ import {
 const RECORDS_FILE = path.join(process.cwd(), "records-store.json");
 const LOGS_FILE = path.join(process.cwd(), "logs-store.json");
 
+// Tracks the last database source successfully written to during replaceAll
+let lastWrittenSource = "";
+
 function readLocalRecords(): any[] {
   if (!fs.existsSync(RECORDS_FILE)) {
     return [];
@@ -217,8 +220,28 @@ app.get("/api/health", (req, res) => {
 app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
   const dbType = isMySQL ? "MySQL" : "PostgreSQL";
   const dbSource = isMySQL ? "mysql" : "postgres";
+
+  // Force fetching from the fallback source if that is where the last successful write occurred,
+  // preventing stale reads from an out-of-sync or failed SQL database connection/write.
+  if (lastWrittenSource === "firestore" || lastWrittenSource === "local-json") {
+    console.log(`[Database Fallback] Last written source was '${lastWrittenSource}'. Directing read to matching fallback to prevent stale state.`);
+    try {
+      if (lastWrittenSource === "firestore") {
+        const fsRecords = await fetchFirestoreRecords();
+        res.setHeader("X-Database-Source", "firestore");
+        return res.json(fsRecords);
+      }
+    } catch (fsErr: any) {
+      console.error("[Database Fallback] Failed to read from Firestore fallback during GET, trying local JSON:", fsErr.message || fsErr);
+    }
+    const localRecords = readLocalRecords();
+    res.setHeader("X-Database-Source", "fallback-local");
+    return res.json(localRecords);
+  }
+
   try {
     const allRecords = await db.select().from(records);
+    lastWrittenSource = dbSource;
     
     // Self-healing safety check: if SQL is connected but returns 0 records,
     // check if we have data in Firestore or local JSON store (e.g. from previous failover sync).
@@ -506,6 +529,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         });
       });
 
+      lastWrittenSource = activeDbEngine;
       res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
     } catch (dbError: any) {
       console.warn(`[Database Fallback] SQL transaction failed on ${dbType}. Trying direct non-transactional batch execution instead. Reason:`, dbError.message || dbError);
@@ -528,6 +552,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
           userEmail: email,
         });
 
+        lastWrittenSource = activeDbEngine;
         res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
       } catch (directError: any) {
         console.warn(`[Database Fallback] SQL direct batch execution failed. Trying highly-robust individual record insert fallback on ${dbType}... Reason:`, directError.message || directError);
@@ -565,6 +590,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
               userEmail: email,
             }).catch(() => {});
             
+            lastWrittenSource = activeDbEngine;
             res.json({ 
               success: true, 
               count: insertedCount, 
@@ -583,6 +609,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
               `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${uniqueFormattedRecords.length}`,
               email
             );
+            lastWrittenSource = "firestore";
             res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
           } catch (fsErr: any) {
             console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
@@ -602,6 +629,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
               email
             );
 
+            lastWrittenSource = "local-json";
             res.json({ 
               success: true, 
               count: uniqueFormattedRecords.length, 
