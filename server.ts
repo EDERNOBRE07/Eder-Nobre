@@ -6,8 +6,12 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as dotenv from "dotenv";
 
-const gFilename = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
-const gDirname = typeof __dirname !== "undefined" ? __dirname : path.dirname(gFilename);
+const gFilename = typeof __filename !== "undefined"
+  ? __filename
+  : (typeof import.meta !== "undefined" && import.meta.url ? fileURLToPath(import.meta.url) : "");
+const gDirname = typeof __dirname !== "undefined"
+  ? __dirname
+  : (gFilename ? path.dirname(gFilename) : process.cwd());
 
 // Load environment variables from .env using multiple fallback paths to support different runtime CWDs (such as Hostinger Passenger cPanel)
 const envPaths = [
@@ -40,7 +44,27 @@ const RECORDS_FILE = path.join(process.cwd(), "records-store.json");
 const LOGS_FILE = path.join(process.cwd(), "logs-store.json");
 
 // Tracks the last database source successfully written to during replaceAll
-let lastWrittenSource = "";
+const LAST_SOURCE_FILE = path.join(process.cwd(), "last-source-store.json");
+
+function getLastWrittenSource(): string {
+  if (fs.existsSync(LAST_SOURCE_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(LAST_SOURCE_FILE, "utf-8"));
+      return data.source || "";
+    } catch (e) {
+      return "";
+    }
+  }
+  return "";
+}
+
+function setLastWrittenSource(source: string) {
+  try {
+    fs.writeFileSync(LAST_SOURCE_FILE, JSON.stringify({ source, timestamp: Date.now() }), "utf-8");
+  } catch (err) {
+    console.error("Failed to write last written source:", err);
+  }
+}
 
 function readLocalRecords(): any[] {
   if (!fs.existsSync(RECORDS_FILE)) {
@@ -222,12 +246,13 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
   const dbSource = isMySQL ? "mysql" : "postgres";
 
   // If the last write went to a fallback because of SQL issues, respect that source for reads to guarantee consistency.
-  if (lastWrittenSource === "local-json") {
+  const currentSource = getLastWrittenSource();
+  if (currentSource === "local-json") {
     console.log("[Database Read] Serving from Local JSON because it was the last successfully written source.");
     const localRecords = readLocalRecords();
     res.setHeader("X-Database-Source", "fallback-local");
     return res.json(localRecords);
-  } else if (lastWrittenSource === "firestore") {
+  } else if (currentSource === "firestore") {
     console.log("[Database Read] Serving from Firestore because it was the last successfully written source.");
     try {
       const fsRecords = await fetchFirestoreRecords();
@@ -322,6 +347,25 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
 app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
   const dbType = isMySQL ? "MySQL" : "PostgreSQL";
   const dbSource = isMySQL ? "mysql" : "postgres";
+
+  const currentSource = getLastWrittenSource();
+  if (currentSource === "local-json") {
+    console.log("[Database Read] Serving logs from Local JSON because it was the last successfully written source.");
+    const localLogs = readLocalLogs();
+    const sortedLogs = localLogs.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+    res.setHeader("X-Database-Source", "fallback-local");
+    return res.json(sortedLogs);
+  } else if (currentSource === "firestore") {
+    console.log("[Database Read] Serving logs from Firestore because it was the last successfully written source.");
+    try {
+      const fsLogs = await fetchFirestoreLogs();
+      res.setHeader("X-Database-Source", "firestore");
+      return res.json(fsLogs);
+    } catch (fsErr: any) {
+      console.warn("[Database Read] Firestore logs read failed, falling back to SQL...", fsErr.message || fsErr);
+    }
+  }
+
   try {
     const logs = await db.select().from(executionLogs).orderBy(desc(executionLogs.timestamp));
     
@@ -565,7 +609,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
         });
       });
 
-      lastWrittenSource = activeDbEngine;
+      setLastWrittenSource(activeDbEngine);
       res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
     } catch (dbError: any) {
       console.warn(`[Database Fallback] SQL transaction failed on ${dbType}. Trying direct non-transactional batch execution instead. Reason:`, dbError.message || dbError);
@@ -593,7 +637,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
           userEmail: email,
         });
 
-        lastWrittenSource = activeDbEngine;
+        setLastWrittenSource(activeDbEngine);
         res.json({ success: true, count: uniqueFormattedRecords.length, database: activeDbEngine });
       } catch (directError: any) {
         console.warn(`[Database Fallback] SQL direct safe sync failed. Trying highly-robust individual record insert fallback on ${dbType}... Reason:`, directError.message || directError);
@@ -670,7 +714,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
             userEmail: email,
           }).catch(() => {});
 
-          lastWrittenSource = activeDbEngine;
+          setLastWrittenSource(activeDbEngine);
           res.json({ 
             success: true, 
             count: totalSaved, 
@@ -688,7 +732,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
               `Substituição atômica de registros concluída com sucesso no Cloud Firestore. Total: ${uniqueFormattedRecords.length}`,
               email
             );
-            lastWrittenSource = "firestore";
+            setLastWrittenSource("firestore");
             res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
           } catch (fsErr: any) {
             console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
@@ -708,7 +752,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
               email
             );
 
-            lastWrittenSource = "local-json";
+            setLastWrittenSource("local-json");
             res.json({ 
               success: true, 
               count: uniqueFormattedRecords.length, 

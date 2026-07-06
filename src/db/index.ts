@@ -3,8 +3,12 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
 
-const gFilename = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
-const gDirname = typeof __dirname !== "undefined" ? __dirname : path.dirname(gFilename);
+const gFilename = typeof __filename !== "undefined"
+  ? __filename
+  : (typeof import.meta !== "undefined" && import.meta.url ? fileURLToPath(import.meta.url) : "");
+const gDirname = typeof __dirname !== "undefined"
+  ? __dirname
+  : (gFilename ? path.dirname(gFilename) : process.cwd());
 
 // Load .env using multiple fallback paths to support different runtime CWDs (such as Hostinger Passenger cPanel)
 const envPaths = [
