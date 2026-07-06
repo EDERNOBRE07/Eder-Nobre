@@ -94,6 +94,8 @@ export default function App() {
   const [pastedText, setPastedText] = useState("");
   const [isPasteAreaOpen, setIsPasteAreaOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastFetchTimeRef = useRef<number>(0);
+  const lastFetchTokenRef = useRef<string>("");
   const [sessionStartTime] = useState<number>(() => Date.now());
 
   // Google Drive State Variables
@@ -502,8 +504,18 @@ export default function App() {
   // -------------------------------------------------------------
   // DATABASE ACCESS FLOW
   // -------------------------------------------------------------
-  const fetchData = async () => {
+  const fetchData = async (options?: { force?: boolean }) => {
     if (!token) return;
+    
+    const force = options?.force === true;
+    const now = Date.now();
+    if (!force && token === lastFetchTokenRef.current && now - lastFetchTimeRef.current < 2500) {
+      console.log("[Data Throttling] Skipping redundant rapid fetchData call to prevent rate limiting (HTTP 429).");
+      return;
+    }
+    
+    lastFetchTimeRef.current = now;
+    lastFetchTokenRef.current = token;
     setDataLoading(true);
     try {
       // Fetch DB status concurrently for UI accuracy
@@ -677,11 +689,11 @@ export default function App() {
 
       if (resJson.local) {
         showToast("Dados salvos localmente! (Aviso: Banco de Dados SQL desconectado)", "info");
-        await fetchData(); // Reload to obtain updated logs and confirmed records
+        await fetchData({ force: true }); // Reload to obtain updated logs and confirmed records
         return `local-json: ${resJson.error || "Banco de dados desconectado ou inativo"}`;
       } else {
         showToast(`Dados sincronizados com o banco de dados ${resJson.database ? resJson.database.toUpperCase() : "SQL"}!`, "success");
-        await fetchData(); // Reload to obtain updated logs and confirmed records
+        await fetchData({ force: true }); // Reload to obtain updated logs and confirmed records
         return resJson.database || "sql";
       }
     } catch (err: any) {
@@ -958,7 +970,7 @@ export default function App() {
             )
           );
           showToast(`"${item.name}" processado com sucesso! ${resData.records.length} ações encontradas.`, "success");
-          fetchData();
+          fetchData({ force: true });
         }
       } else {
         throw new Error("Nenhum registro pôde ser estruturado pela inteligência artificial.");
@@ -2978,7 +2990,7 @@ export default function App() {
                   <p className="text-slate-500 text-xs mt-1">Histórico completo de processamentos por inteligência artificial, sincronizações SQL e alterações no sistema.</p>
                 </div>
                 <button 
-                  onClick={fetchData} 
+                  onClick={() => fetchData({ force: true })} 
                   className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-bold text-xs py-2 px-3.5 rounded-xl flex items-center gap-1.5 transition-colors shadow-sm"
                 >
                   <RefreshCw size={13} /> Atualizar Logs
