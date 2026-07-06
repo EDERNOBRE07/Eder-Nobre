@@ -6,14 +6,14 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as dotenv from "dotenv";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const gFilename = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
+const gDirname = typeof __dirname !== "undefined" ? __dirname : path.dirname(gFilename);
 
 // Load environment variables from .env using multiple fallback paths to support different runtime CWDs (such as Hostinger Passenger cPanel)
 const envPaths = [
   path.resolve(process.cwd(), ".env"),
-  path.resolve(__dirname, "..", ".env"),
-  path.resolve(__dirname, ".env"),
+  path.resolve(gDirname, "..", ".env"),
+  path.resolve(gDirname, ".env"),
 ];
 for (const envPath of envPaths) {
   if (fs.existsSync(envPath)) {
