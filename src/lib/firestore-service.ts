@@ -82,7 +82,7 @@ export async function fetchFirestoreRecords(): Promise<any[]> {
     });
     return list;
   } catch (err: any) {
-    console.error("[Firestore Service] Error fetching records from Firestore:", err.message || err);
+    console.warn("[Firestore Service] Note: Could not fetch records from Cloud Firestore (this is expected if the service account does not have custom Firestore database roles):", err.message || err);
     throw err;
   }
 }
@@ -144,7 +144,7 @@ export async function saveFirestoreRecords(newRecords: any[]): Promise<void> {
       console.log(`[Firestore Service] Successfully wrote ${newRecords.length} records.`);
     }
   } catch (err: any) {
-    console.error("[Firestore Service] Error replacing records in Firestore:", err.message || err);
+    console.warn("[Firestore Service] Note: Could not replace records in Cloud Firestore (mirror database currently unavailable or pending IAM propagation):", err.message || err);
     throw err;
   }
 }
@@ -159,7 +159,7 @@ export async function fetchFirestoreLogs(): Promise<any[]> {
     });
     return list;
   } catch (err: any) {
-    console.error("[Firestore Service] Error fetching logs from Firestore:", err.message || err);
+    console.warn("[Firestore Service] Note: Could not fetch logs from Cloud Firestore:", err.message || err);
     throw err;
   }
 }
@@ -177,7 +177,7 @@ export async function addFirestoreLog(action: string, status: string, details: s
     const docRef = await dbFirestore.collection("logs").add(cleanLog);
     return { id: docRef.id, ...cleanLog };
   } catch (err: any) {
-    console.error("[Firestore Service] Error adding log to Firestore:", err.message || err);
+    console.warn("[Firestore Service] Note: Could not add log to Cloud Firestore (silently handled):", err.message || err);
     // Silent fail for logs so we don't block user flows
   }
 }

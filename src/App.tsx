@@ -629,7 +629,14 @@ export default function App() {
 
   // Sync state back to SQL Server (atomic ReplaceAll snapshot save)
   const syncWithDatabase = async (updatedRecordsList: DBRecord[]): Promise<string> => {
+    const startTime = performance.now();
+    console.log("[Sync SQL] === INÍCIO DO PROCESSO DE SINCRONIZAÇÃO ===");
+    console.log("[Sync SQL] Payload enviado para o servidor (Array completo):", updatedRecordsList);
+    console.log("[Sync SQL] Quantidade de registros no payload:", updatedRecordsList.length);
+    console.log("[Sync SQL] Representação JSON exata do payload sendo enviado:", JSON.stringify(updatedRecordsList, null, 2));
+
     if (!token) {
+      console.warn("[Sync SQL] Sincronização cancelada: Usuário não autenticado (Token ausente).");
       showToast("Você precisa estar autenticado para salvar alterações.", "error");
       return "";
     }
@@ -645,15 +652,25 @@ export default function App() {
         body: JSON.stringify(updatedRecordsList)
       });
 
+      const endTime = performance.now();
+      const responseTimeMs = (endTime - startTime).toFixed(2);
+      console.log(`[Sync SQL] Resposta recebida do servidor backend em ${responseTimeMs}ms.`);
+      console.log(`[Sync SQL] Status HTTP da resposta: ${response.status} (${response.statusText})`);
+
       if (!response.ok) {
         let errorMsg = "HTTP " + response.status;
+        let errObj: any = null;
         try {
-          const errObj = await response.json();
+          const responseClone = response.clone();
+          const responseText = await responseClone.text();
+          console.error("[Sync SQL] Corpo de resposta de erro (não-OK):", responseText);
+          errObj = JSON.parse(responseText);
           errorMsg = errObj.error || errObj.message || errorMsg;
         } catch (e) {
           // Response is not JSON
         }
         
+        console.error(`[Sync SQL] Erro na requisição de sincronização. Código: ${response.status}, Detalhes: ${errorMsg}`);
         const logData: LastSyncLog = {
           timestamp: new Date().toLocaleString("pt-BR"),
           status: response.status,
@@ -670,6 +687,13 @@ export default function App() {
       }
 
       const resJson = await response.json();
+      console.log("[Sync SQL] === SUCESSO NA RESPOSTA JSON ===");
+      console.log("[Sync SQL] Estrutura completa do objeto JSON recebido:", JSON.stringify(resJson, null, 2));
+      console.log("[Sync SQL] Tipo de banco retornado pelo backend:", resJson.database);
+      console.log("[Sync SQL] Quantidade de registros processados confirmados pelo backend:", resJson.count);
+      console.log("[Sync SQL] Indica gravação em fallback local (resJson.local):", resJson.local);
+      console.log("[Sync SQL] === FIM DO PROCESSO DE SINCRONIZAÇÃO ===");
+
       setIsDbFallbackLocal(!!resJson.local);
 
       const isSqlSuccess = !resJson.local && resJson.database !== "firestore";
@@ -697,7 +721,9 @@ export default function App() {
         return resJson.database || "sql";
       }
     } catch (err: any) {
-      console.error("Sync failed:", err);
+      const endTime = performance.now();
+      const responseTimeMs = (endTime - startTime).toFixed(2);
+      console.error(`[Sync SQL] Falha crítica de sincronização após ${responseTimeMs}ms:`, err);
       showToast("Falha ao salvar no SQL: " + err.message, "error");
       
       // If we didn't get a response (e.g. Network Error), save log here

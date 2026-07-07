@@ -346,7 +346,7 @@ app.get("/api/records", requireAuth, async (req: AuthRequest, res) => {
       res.setHeader("X-Database-Source", "firestore");
       res.json(fsRecords);
     } catch (fsErr: any) {
-      console.error("[Database Fallback] Firestore fallback failed, trying local JSON:", fsErr.message || fsErr);
+      console.warn("[Database Fallback] Firestore fallback database not available, fetching from local JSON mirror:", fsErr.message || fsErr);
       const localRecords = readLocalRecords();
       res.setHeader("X-Database-Source", "fallback-local");
       res.json(localRecords);
@@ -407,7 +407,7 @@ app.get("/api/logs", requireAuth, async (req: AuthRequest, res) => {
       res.setHeader("X-Database-Source", "firestore");
       res.json(fsLogs);
     } catch (fsErr: any) {
-      console.error("[Database Fallback] Firestore fallback failed, trying local JSON:", fsErr.message || fsErr);
+      console.warn("[Database Fallback] Firestore fallback database not available, fetching logs from local JSON mirror:", fsErr.message || fsErr);
       const localLogs = readLocalLogs();
       const sortedLogs = localLogs.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
       res.setHeader("X-Database-Source", "fallback-local");
@@ -506,7 +506,7 @@ app.post("/api/logs/add", requireAuth, async (req: AuthRequest, res) => {
       await addFirestoreLog(actionStr, statusStr, detailsStr, email);
       res.json({ success: true, database: "firestore" });
     } catch (fsErr: any) {
-      console.error("[Database Fallback] Firestore fallback failed, using local JSON:", fsErr.message || fsErr);
+      console.warn("[Database Fallback] Firestore fallback database not available, saving log to local JSON mirror:", fsErr.message || fsErr);
       addLocalLog(actionStr, statusStr, detailsStr, email);
       res.json({ success: true, database: "local-json" });
     }
@@ -590,7 +590,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
       await saveFirestoreRecords(uniqueFormattedRecords);
       console.log(`[Database Sync] Successfully mirrored ${uniqueFormattedRecords.length} records to Cloud Firestore.`);
     } catch (fsErr: any) {
-      console.error(`[Database Sync] Cloud Firestore mirroring failed:`, fsErr.message || fsErr);
+      console.warn(`[Database Sync] Cloud Firestore mirroring skipped (mirror DB offline or IAM roles pending):`, fsErr.message || fsErr);
     }
 
     const activeDbEngine = isMySQL ? "mysql" : "postgres";
@@ -746,7 +746,7 @@ app.post("/api/records/replaceAll", requireAuth, async (req: AuthRequest, res) =
             setLastWrittenSource("firestore");
             res.json({ success: true, count: uniqueFormattedRecords.length, database: "firestore" });
           } catch (fsErr: any) {
-            console.error("[Database Fallback] Cloud Firestore write failed. Using local JSON as ultimate fallback:", fsErr.message || fsErr);
+            console.warn("[Database Fallback] Cloud Firestore write unavailable, saving to local JSON as ultimate fallback:", fsErr.message || fsErr);
             
             // Save SQL and Firestore failures as ERROR log
             addLocalLog(
