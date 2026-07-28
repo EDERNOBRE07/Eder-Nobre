@@ -971,8 +971,8 @@ export default function App() {
 
       const allExtractedRecords: any[] = [];
 
-      // Helper function to call classify endpoint with automatic retry on 429 rate limits
-      const fetchClassifyWithRetry = async (payload: any, maxRetries = 3) => {
+      // Helper function to call classify endpoint with automatic retry on 429 rate limits and 504 Gateway Timeouts
+      const fetchClassifyWithRetry = async (payload: any, maxRetries = 4) => {
         let attempt = 1;
         while (true) {
           try {
@@ -989,9 +989,11 @@ export default function App() {
           } catch (err: any) {
             const errStr = String(err.message || err);
             const isQuota = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.toLowerCase().includes("cota") || errStr.includes("RESOURCE_EXHAUSTED");
-            if (isQuota && attempt <= maxRetries) {
-              const waitSec = 15;
-              console.warn(`[Client Retry] Cota temporariamente excedida. Aguardando ${waitSec}s para tentar novamente (Tentativa ${attempt}/${maxRetries})...`);
+            const isTimeout = errStr.includes("504") || errStr.includes("502") || errStr.toLowerCase().includes("gateway") || errStr.toLowerCase().includes("timeout") || errStr.toLowerCase().includes("tempo limite");
+
+            if ((isQuota || isTimeout) && attempt <= maxRetries) {
+              const waitSec = isQuota ? 12 : 3;
+              console.warn(`[Client Retry] ${isQuota ? "Cota excedida" : "Timeout de gateway (504)"}. Aguardando ${waitSec}s para tentar novamente (Tentativa ${attempt}/${maxRetries})...`);
               await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
               attempt++;
             } else {
@@ -1002,26 +1004,37 @@ export default function App() {
       };
 
       if (extractedText.trim()) {
-        // Chunk extractedText into 16,000 char blocks (optimal for Gemini token window & fast HTTP response)
-        const CLIENT_CHUNK_SIZE = 16000;
+        // Chunk into ~4,000 character blocks strictly along line breaks so rows are never split,
+        // ensuring Gemini responds in ~2 seconds to completely avoid Hostinger 504 Gateway Timeouts!
+        const CLIENT_CHUNK_SIZE = 4000;
         const textChunks: string[] = [];
         
         if (extractedText.length > CLIENT_CHUNK_SIZE) {
-          for (let offset = 0; offset < extractedText.length; offset += CLIENT_CHUNK_SIZE) {
-            textChunks.push(extractedText.slice(offset, offset + CLIENT_CHUNK_SIZE));
+          const lines = extractedText.split("\n");
+          let currentChunk = "";
+          for (const line of lines) {
+            if ((currentChunk + "\n" + line).length > CLIENT_CHUNK_SIZE && currentChunk.length > 0) {
+              textChunks.push(currentChunk);
+              currentChunk = line;
+            } else {
+              currentChunk = currentChunk ? currentChunk + "\n" + line : line;
+            }
+          }
+          if (currentChunk) {
+            textChunks.push(currentChunk);
           }
         } else {
           textChunks.push(extractedText);
         }
 
-        console.log(`[Client Classification] Enviando "${item.name}" em ${textChunks.length} parte(s).`);
+        console.log(`[Client Classification] Dividindo "${item.name}" em ${textChunks.length} parte(s) pequenas (~4KB cada) para garantir resposta rápida (<3s).`);
 
         for (let chunkIdx = 0; chunkIdx < textChunks.length; chunkIdx++) {
           const currentChunkText = textChunks[chunkIdx];
           
-          // Pause 2.5s between chunks to stay well under the 15 RPM free tier limit
+          // Pause 2 seconds between consecutive chunk HTTP calls to stay below Gemini 15 RPM
           if (chunkIdx > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 2500));
+            await new Promise((resolve) => setTimeout(resolve, 2000));
           }
 
           const resData = await fetchClassifyWithRetry({ 

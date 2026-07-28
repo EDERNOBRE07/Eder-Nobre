@@ -916,9 +916,8 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       }
       extractedRecords = JSON.parse(aiResponseText);
     } else {
-      // Text payload - Chunk to prevent exceeding Free Tier's TPM and RPM constraints
-      // Reduced chunk size to 15,000 chars to avoid Gemini output token truncation (max 8,192 output tokens)
-      const chunks = chunkText(text, 15000);
+      // Text payload - Chunk into small blocks (~5,000 chars) so Gemini responds in < 3s, preventing Nginx 504 timeouts
+      const chunks = chunkText(text, 5000);
       console.log(`[Gemini API] Split input text into ${chunks.length} chunk(s) to respect free-tier TPM limit.`);
 
       for (let i = 0; i < chunks.length; i++) {
