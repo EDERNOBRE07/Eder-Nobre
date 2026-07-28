@@ -889,6 +889,12 @@ app.post("/api/records/classify", requireAuth, async (req: AuthRequest, res) => 
 
 Analise o documento anexo (proveniente do arquivo ${filename || "enviado pelo usuário"}) e extraia TODAS as ações parlamentares individuais/atividades que encontrar.
 
+REGRAS OBRIGATÓRIAS PARA ARQUIVOS CSV, PLANILHAS (XLS/XLSX) E TABELAS:
+- Cada linha de dados da planilha/CSV (que não seja a linha de cabeçalho) é um INPUT/REGISTRO NOVO E INDIVIDUAL.
+- Você DEVE extrair exatamente 1 registro/ação para CADA linha válida de dados da tabela/planilha.
+- NUNCA agrupe, consolide, resuma ou pule linhas da planilha. Se a planilha possui 30 linhas de dados, você deve retornar exatamente 30 registros individuais.
+- Mapeie as colunas (Data, Ação/Descrição, Deputado, Cidade, Setor, Projeto de Lei, Emenda, Recursos/Valor, Status, Observações) diretamente para os atributos do objeto JSON.
+
 Extraia as ações e classifique cada uma de forma inteligente seguindo este esquema estrito.`
             }
           ]
@@ -927,6 +933,12 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
 Você é uma inteligência artificial especialista na análise, estruturação e classificação de diários oficiais, notícias, emendas e relatórios de atividades políticas de deputados do estado de Santa Catarina (SC).
 
 Analise o seguinte fragmento de texto (Parte ${i + 1} de ${chunks.length}, proveniente de um arquivo ${filename || "enviado pelo usuário"}) e extraia TODAS as ações parlamentares individuais/atividades encontradas especificamente neste trecho.
+
+REGRAS OBRIGATÓRIAS PARA ARQUIVOS CSV, PLANILHAS (XLS/XLSX) E TABELAS:
+- Cada linha de dados da planilha/CSV (que não seja a linha de cabeçalho) é um INPUT/REGISTRO NOVO E INDIVIDUAL.
+- Você DEVE extrair exatamente 1 registro/ação para CADA linha válida de dados da tabela/planilha.
+- NUNCA agrupe, consolide, resuma ou pule linhas da planilha. Se o trecho possui 20 linhas de dados, você deve retornar exatamente 20 registros individuais.
+- Mapeie as colunas (Data, Ação/Descrição, Deputado, Cidade, Setor, Projeto de Lei, Emenda, Recursos/Valor, Status, Observações) diretamente para os atributos do objeto JSON.
 
 Texto para análise:
 """
@@ -1046,7 +1058,8 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       }
     }
 
-    res.status(500).json({ error: "Gemini processing failed: " + friendlyErrorMessage });
+    const statusCode = isAuthError ? 401 : isQuotaError ? 429 : 500;
+    res.status(statusCode).json({ error: friendlyErrorMessage });
   }
 });
 

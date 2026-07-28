@@ -87,6 +87,7 @@ export default function App() {
   // File Staging and Batch Preview State
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [stagedRecords, setStagedRecords] = useState<DBRecord[]>([]);
+  const [stagedFilterTab, setStagedFilterTab] = useState<"all" | "duplicates" | "unique">("all");
   const [importSessionItems, setImportSessionItems] = useState<ImportSessionItem[]>([]);
   const [importLoading, setImportLoading] = useState(false);
   const [importSource, setImportSource] = useState("");
@@ -794,26 +795,32 @@ export default function App() {
   const parseSafeJsonResponse = async (response: Response): Promise<any> => {
     const text = await response.text();
     let json: any = null;
+
+    // Detect if server or proxy (Hostinger/Nginx/Cloudflare) returned an HTML response page instead of JSON
+    const isHtml = text.trim().startsWith("<") || text.includes("<html") || text.includes("<!DOCTYPE") || text.includes("<head");
+
+    if (isHtml) {
+      console.error(`[API Parse Error] Resposta do servidor/proxy não-JSON (HTTP ${response.status}):`, text.slice(0, 300));
+      if (response.status === 502 || response.status === 504 || text.includes("502") || text.includes("504") || text.includes("Gateway")) {
+        throw new Error("O servidor de hospedagem excedeu o tempo limite de resposta (Erro HTTP 504/502 Gateway Timeout). O arquivo/processamento demorou mais que o limite do proxy. Clique em 'Reprocessar Item' para tentar novamente.");
+      } else if (response.status === 413 || text.includes("413") || text.includes("Payload Too Large")) {
+        throw new Error("O arquivo ou texto enviado é muito grande para o servidor (Erro HTTP 413 Payload Too Large). Tente enviar um arquivo menor.");
+      } else if (response.status === 500) {
+        throw new Error("O servidor encontrou um erro interno temporário (Erro HTTP 500). Tente reprocessar este item em alguns instantes.");
+      } else {
+        throw new Error(`O serviço de hospedagem retornou uma página de erro HTTP ${response.status} (${response.statusText || "Servidor Indisponível"}). Clique em 'Reprocessar Item' para tentar novamente.`);
+      }
+    }
+
     try {
       json = JSON.parse(text);
     } catch (parseErr) {
-      console.error(`[API Parse Error] Resposta do servidor não-JSON (Status ${response.status} ${response.statusText}):`, text);
-      if (text.includes("<html") || text.includes("<!DOCTYPE") || text.includes("<head")) {
-        if (response.status === 502 || response.status === 503 || response.status === 504) {
-          throw new Error(`O servidor ou o serviço de IA do Gemini está temporariamente indisponível ou congestionado (Erro HTTP ${response.status} Gateway/Timeout). Por favor, clique no botão "Reprocessar Item" para tentar novamente.`);
-        } else if (response.status === 413) {
-          throw new Error("O arquivo ou texto enviado é muito grande para o servidor (Erro HTTP 413 Payload Too Large). Tente enviar um arquivo menor ou em partes.");
-        } else if (response.status === 500) {
-          throw new Error("O servidor encontrou um erro interno temporário (Erro HTTP 500). Tente reprocessar em alguns instantes.");
-        } else {
-          throw new Error(`O servidor retornou uma página de erro HTTP ${response.status} (${response.statusText || "Erro no Servidor"}). Clique em "Reprocessar Item" para tentar novamente.`);
-        }
-      }
-      throw new Error(`Resposta do servidor inválida (HTTP ${response.status}): ${text.slice(0, 150)}`);
+      console.error(`[API Parse Error] Resposta do servidor não é um JSON válido (HTTP ${response.status}):`, text.slice(0, 300));
+      throw new Error(`Resposta inválida do servidor (HTTP ${response.status}). Por favor, clique no botão 'Reprocessar Item' para tentar novamente.`);
     }
 
     if (!response.ok) {
-      throw new Error(json?.error || json?.message || `Erro no processamento do servidor (Status HTTP ${response.status})`);
+      throw new Error(json?.error || json?.message || `Erro no servidor (Status HTTP ${response.status})`);
     }
 
     return json;
@@ -955,25 +962,77 @@ export default function App() {
         throw new Error("Sessão expirada. Autentique-se novamente.");
       }
 
-      const response = await fetch("/api/records/classify", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          "X-Gemini-API-Key": customGeminiKey
-        },
-        body: JSON.stringify({ 
-          text: extractedText, 
-          filename: item.name, 
-          fileBase64: fileBase64 || undefined, 
-          mimeType: mimeType || undefined 
-        })
-      });
+      const allExtractedRecords: any[] = [];
 
-      const resData = await parseSafeJsonResponse(response);
-      if (resData.records && Array.isArray(resData.records)) {
+      if (extractedText.trim()) {
+        // Split extractedText into chunks of up to 12,000 characters to ensure each HTTP call takes < 10 seconds,
+        // completely avoiding Hostinger/Nginx 504 Gateway Timeouts on large Excel spreadsheets!
+        const CLIENT_CHUNK_SIZE = 12000;
+        const textChunks: string[] = [];
+        
+        if (extractedText.length > CLIENT_CHUNK_SIZE) {
+          for (let offset = 0; offset < extractedText.length; offset += CLIENT_CHUNK_SIZE) {
+            textChunks.push(extractedText.slice(offset, offset + CLIENT_CHUNK_SIZE));
+          }
+        } else {
+          textChunks.push(extractedText);
+        }
+
+        console.log(`[Client Classification] Enviando "${item.name}" em ${textChunks.length} parte(s) para evitar timeouts do servidor.`);
+
+        for (let chunkIdx = 0; chunkIdx < textChunks.length; chunkIdx++) {
+          const currentChunkText = textChunks[chunkIdx];
+          
+          // Slight pause between client chunks if multiple to avoid hitting rate limits
+          if (chunkIdx > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+          }
+
+          const response = await fetch("/api/records/classify", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+              "X-Gemini-API-Key": customGeminiKey
+            },
+            body: JSON.stringify({ 
+              text: currentChunkText, 
+              filename: textChunks.length > 1 ? `${item.name} (Parte ${chunkIdx + 1}/${textChunks.length})` : item.name, 
+              fileBase64: undefined, 
+              mimeType: undefined 
+            })
+          });
+
+          const resData = await parseSafeJsonResponse(response);
+          if (resData.records && Array.isArray(resData.records)) {
+            allExtractedRecords.push(...resData.records);
+          }
+        }
+      } else if (fileBase64 && mimeType) {
+        const response = await fetch("/api/records/classify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            "X-Gemini-API-Key": customGeminiKey
+          },
+          body: JSON.stringify({ 
+            text: "", 
+            filename: item.name, 
+            fileBase64: fileBase64, 
+            mimeType: mimeType 
+          })
+        });
+
+        const resData = await parseSafeJsonResponse(response);
+        if (resData.records && Array.isArray(resData.records)) {
+          allExtractedRecords.push(...resData.records);
+        }
+      }
+
+      if (allExtractedRecords.length > 0) {
         // Tag records with the importItemId so we can remove or re-import cleanly
-        const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
+        const taggedNew = allExtractedRecords.map((r: any) => ({ ...r, importItemId: item.id }));
 
         if (autoSaveAfterImport) {
           // Immediately sync with database using functional updater to prevent stale closures
@@ -984,7 +1043,7 @@ export default function App() {
                 setImportSessionItems((prev) =>
                   prev.map((i) =>
                     i.id === item.id
-                      ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                      ? { ...i, status: "success", recordsCount: allExtractedRecords.length, fileObject: item.fileObject }
                       : i
                   )
                 );
@@ -999,7 +1058,7 @@ export default function App() {
                 setImportSessionItems((prev) =>
                   prev.map((i) =>
                     i.id === item.id
-                      ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                      ? { ...i, status: "success", recordsCount: allExtractedRecords.length, fileObject: item.fileObject }
                       : i
                   )
                 );
@@ -1019,11 +1078,11 @@ export default function App() {
           setImportSessionItems((prev) =>
             prev.map((i) =>
               i.id === item.id
-                ? { ...i, status: "success", recordsCount: resData.records.length, fileObject: item.fileObject }
+                ? { ...i, status: "success", recordsCount: allExtractedRecords.length, fileObject: item.fileObject }
                 : i
             )
           );
-          showToast(`"${item.name}" processado com sucesso! ${resData.records.length} ações encontradas.`, "success");
+          showToast(`"${item.name}" processado com sucesso! ${allExtractedRecords.length} ações encontradas.`, "success");
           fetchData({ force: true });
         }
       } else {
@@ -1328,6 +1387,11 @@ export default function App() {
     return { isDuplicate: false, type: "", reason: "" };
   };
 
+  const handleRemoveSingleStagedRecord = (recordId: string | undefined, index: number) => {
+    setStagedRecords((prev) => prev.filter((r, idx) => (recordId ? r.id !== recordId : idx !== index)));
+    showToast("Registro removido do lote de importação.", "info");
+  };
+
   const handleRemoveStagedDuplicates = () => {
     const uniqueStaged: DBRecord[] = [];
     let countRemoved = 0;
@@ -1345,7 +1409,8 @@ export default function App() {
       showToast("Nenhum registro duplicado foi encontrado no lote.", "info");
     } else {
       setStagedRecords(uniqueStaged);
-      showToast(`${countRemoved} registros duplicados foram removidos do lote provisório.`, "success");
+      setStagedFilterTab("all");
+      showToast(`${countRemoved} registros duplicados foram excluídos do lote provisório.`, "success");
     }
   };
 
@@ -2377,7 +2442,7 @@ export default function App() {
                             </span>
                           )}
                         </h4>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Revise o resultado estruturado pelo Gemini 3.5 Flash antes de gravar no banco de dados.</p>
+                        <p className="text-[11px] text-slate-400 mt-0.5">Revise cada linha extraída do arquivo (CSV/XLSX) antes de gravar no banco de dados.</p>
                       </div>
                       <div className="flex gap-2">
                         {duplicatesCount > 0 && (
@@ -2385,7 +2450,7 @@ export default function App() {
                             onClick={handleRemoveStagedDuplicates}
                             className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 text-xs font-bold py-1.5 px-3 rounded-xl transition-all flex items-center gap-1.5 shadow"
                           >
-                            🧹 Limpar Duplicados
+                            🧹 Excluir {duplicatesCount} Duplicados
                           </button>
                         )}
                         <button 
@@ -2406,12 +2471,12 @@ export default function App() {
                     {duplicatesCount > 0 && (
                       <div className="p-3.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn leading-relaxed">
                         <div className="flex items-start gap-2.5">
-                          <span className="text-lg">⚠️</span>
+                          <span className="text-lg shrink-0">⚠️</span>
                           <div>
-                            <p className="font-bold text-amber-200">Registros Duplicados Encontrados</p>
+                            <p className="font-bold text-amber-200">Atenção: {duplicatesCount} Registros Duplicados Encontrados</p>
                             <p className="text-slate-400 text-[11px] mt-0.5">
-                              Existem {duplicatesCount} ações que já foram inseridas no banco de dados anteriormente ou estão repetidas dentro deste mesmo lote. 
-                              Você pode remover todas automaticamente clicando no botão ao lado.
+                              Estes itens correspondem a ações que já existem no banco de dados SQL ou estão repetidas no próprio arquivo importado.
+                              Você pode visualizá-los na aba "Apenas Duplicados" ou clicar para excluir todas as duplicidades de uma só vez.
                             </p>
                           </div>
                         </div>
@@ -2419,12 +2484,46 @@ export default function App() {
                           onClick={handleRemoveStagedDuplicates}
                           className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-1.5 px-3 rounded-lg text-[11px] transition-colors shadow-sm shrink-0 self-start sm:self-center"
                         >
-                          Remover {duplicatesCount} Duplicados do Lote
+                          Excluir Todos os {duplicatesCount} Duplicados
                         </button>
                       </div>
                     )}
 
-                    <div className="overflow-x-auto border border-slate-800 rounded bg-slate-950/80 scrollbar-thin max-h-80">
+                    {/* Filter Tabs for Staged Records */}
+                    <div className="flex items-center gap-2 border-b border-slate-800 pb-2.5 pt-1">
+                      <button
+                        onClick={() => setStagedFilterTab("all")}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                          stagedFilterTab === "all"
+                            ? "bg-blue-600 text-white shadow-md"
+                            : "bg-slate-900 text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                        }`}
+                      >
+                        📋 Todos ({stagedRecords.length})
+                      </button>
+                      <button
+                        onClick={() => setStagedFilterTab("duplicates")}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                          stagedFilterTab === "duplicates"
+                            ? "bg-amber-600 text-white shadow-md"
+                            : "bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 border border-amber-500/20"
+                        }`}
+                      >
+                        ⚠️ Apenas Duplicados ({duplicatesCount})
+                      </button>
+                      <button
+                        onClick={() => setStagedFilterTab("unique")}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                          stagedFilterTab === "unique"
+                            ? "bg-emerald-600 text-white shadow-md"
+                            : "bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/20"
+                        }`}
+                      >
+                        ✓ Apenas Novos ({stagedRecords.length - duplicatesCount})
+                      </button>
+                    </div>
+
+                    <div className="overflow-x-auto border border-slate-800 rounded bg-slate-950/80 scrollbar-thin max-h-96">
                       <table className="w-full text-left border-collapse text-xs">
                         <thead>
                           <tr className="bg-slate-900 border-b border-slate-800">
@@ -2436,48 +2535,64 @@ export default function App() {
                             <th className="p-3 text-slate-400 font-medium">PL / Emenda</th>
                             <th className="p-3 text-slate-400 font-medium text-right">Investimento</th>
                             <th className="p-3 text-slate-400 font-medium">Status</th>
+                            <th className="p-3 text-slate-400 font-medium text-center">Excluir</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-900">
-                          {stagedRecords.map((r, idx) => {
-                            const s = getSectorById(r.sector);
-                            const status = getStagedRecordStatus(r, idx);
-                            return (
-                              <tr key={idx} className={`hover:bg-slate-900/50 transition-colors ${status.isDuplicate ? "bg-amber-950/10" : ""}`}>
-                                <td className="p-3 whitespace-nowrap font-medium">
-                                  {status.isDuplicate ? (
-                                    <span 
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                                      title={status.reason}
+                          {stagedRecords
+                            .map((r, idx) => ({ record: r, originalIndex: idx, status: getStagedRecordStatus(r, idx) }))
+                            .filter(({ status }) => {
+                              if (stagedFilterTab === "duplicates") return status.isDuplicate;
+                              if (stagedFilterTab === "unique") return !status.isDuplicate;
+                              return true;
+                            })
+                            .map(({ record: r, originalIndex: idx, status }) => {
+                              const s = getSectorById(r.sector);
+                              return (
+                                <tr key={idx} className={`hover:bg-slate-900/50 transition-colors ${status.isDuplicate ? "bg-amber-950/20" : ""}`}>
+                                  <td className="p-3 whitespace-nowrap font-medium">
+                                    {status.isDuplicate ? (
+                                      <span 
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                        title={status.reason}
+                                      >
+                                        ⚠️ {status.reason}
+                                      </span>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                        ✓ Seguro (Novo)
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="p-3 whitespace-nowrap">
+                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-blue-200">
+                                      {s?.icon} {s?.name || r.sector}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 whitespace-nowrap text-slate-300 font-mono text-[11px]">{formatDateString(r.data)}</td>
+                                  <td className="p-3 max-w-xs text-slate-100 font-medium leading-relaxed">{r.deputado}</td>
+                                  <td className="p-3 whitespace-nowrap text-slate-300">{r.cidade || "—"}</td>
+                                  <td className="p-3 max-w-[120px] truncate text-slate-400 font-mono text-[10px]">
+                                    {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
+                                  </td>
+                                  <td className="p-3 text-right text-blue-400 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
+                                  <td className="p-3 whitespace-nowrap">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
+                                      {r.status}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-center whitespace-nowrap">
+                                    <button
+                                      onClick={() => handleRemoveSingleStagedRecord(r.id, idx)}
+                                      title="Remover este item do lote"
+                                      className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/20 rounded transition-colors"
                                     >
-                                      ⚠️ {status.reason}
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                      ✓ Seguro (Novo)
-                                    </span>
-                                  )}
-                                </td>
-                                <td className="p-3 whitespace-nowrap">
-                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-blue-200">
-                                    {s?.icon} {s?.name || r.sector}
-                                  </span>
-                                </td>
-                                <td className="p-3 whitespace-nowrap text-slate-300 font-mono text-[11px]">{formatDateString(r.data)}</td>
-                                <td className="p-3 max-w-xs text-slate-100 font-medium leading-relaxed">{r.deputado}</td>
-                                <td className="p-3 whitespace-nowrap text-slate-300">{r.cidade || "—"}</td>
-                                <td className="p-3 max-w-[120px] truncate text-slate-400 font-mono text-[10px]">
-                                  {r.projetoLei ? `PL: ${r.projetoLei}` : r.emenda ? `Emenda: ${r.emenda}` : "—"}
-                                </td>
-                                <td className="p-3 text-right text-blue-400 font-bold whitespace-nowrap">{formatBRL(r.recursos)}</td>
-                                <td className="p-3 whitespace-nowrap">
-                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${getStatusBadgeClass(r.status)}`}>
-                                    {r.status}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                         </tbody>
                       </table>
                     </div>
