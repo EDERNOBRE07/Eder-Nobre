@@ -207,12 +207,12 @@ function getGeminiClient(req?: express.Request): GoogleGenAI {
   });
 }
 
-// Helper to query Gemini with retry on transient errors (e.g. 503 UNAVAILABLE, 429 Rate Limit)
+// Helper to query Gemini with fast retry on transient errors (short delays to prevent proxy 504 timeouts)
 async function generateContentWithRetry(
   ai: GoogleGenAI,
   params: any,
-  maxRetries = 5,
-  initialDelayMs = 3000
+  maxRetries = 2,
+  initialDelayMs = 1500
 ) {
   let attempt = 1;
   let delay = initialDelayMs;
@@ -234,12 +234,10 @@ async function generateContentWithRetry(
         err.status === 503;
 
       if (isTransient && attempt <= maxRetries) {
-        // For quota rate limits (HTTP 429), use at least 15s wait time to allow the 1-minute window to reset
-        const actualDelay = isQuotaError ? Math.max(delay, 15000) : delay;
-        console.warn(`[Gemini API] Erro temporário ou limite de cota detectado (Tentativa ${attempt}/${maxRetries}). Aguardando ${actualDelay / 1000}s para tentar novamente... Erro:`, errStr);
-        await new Promise((resolve) => setTimeout(resolve, actualDelay));
+        console.warn(`[Gemini API] Erro temporário na API (Tentativa ${attempt}/${maxRetries}). Aguardando ${delay / 1000}s para tentar novamente... Erro:`, errStr);
+        await new Promise((resolve) => setTimeout(resolve, delay));
         attempt++;
-        delay *= 2; // Exponential backoff
+        delay *= 1.5;
       } else {
         throw err;
       }
@@ -880,7 +878,7 @@ app.post("/api/records/classify", requireAuth, async (req: AuthRequest, res) => 
     if (fileBase64 && mimeType) {
       // File payload (e.g., PDF) - Process in a single request as we can't easily chunk binary on the server
       const response = await generateContentWithRetry(ai, {
-        model: "gemini-3.5-flash",
+        model: "gemini-2.5-flash",
         contents: {
           parts: [
             {
@@ -916,27 +914,14 @@ Extraia as ações e classifique cada uma de forma inteligente seguindo este esq
       }
       extractedRecords = JSON.parse(aiResponseText);
     } else {
-      // Text payload - Chunk into small blocks (~5,000 chars) so Gemini responds in < 3s, preventing Nginx 504 timeouts
-      const chunks = chunkText(text, 5000);
-      console.log(`[Gemini API] Split input text into ${chunks.length} chunk(s) to respect free-tier TPM limit.`);
-
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        console.log(`[Gemini API] Processing chunk ${i + 1}/${chunks.length} (${chunk.length} characters)...`);
-
-        // Wait a short duration between consecutive chunk requests to prevent hitting concurrent/RPM limits
-        if (i > 0) {
-          const waitTimeMs = 4000;
-          console.log(`[Gemini API] Waiting ${waitTimeMs / 1000} seconds before processing the next chunk...`);
-          await new Promise((resolve) => setTimeout(resolve, waitTimeMs));
-        }
-
-        const response = await generateContentWithRetry(ai, {
-          model: "gemini-3.5-flash",
-          contents: `
+      // Text payload - Process directly in a single call (client already handles small ~3KB chunks)
+      console.log(`[Gemini API] Processing text payload (${text.length} characters) for ${filename || "unnamed file"}...`);
+      const response = await generateContentWithRetry(ai, {
+        model: "gemini-2.5-flash",
+        contents: `
 Você é uma inteligência artificial especialista na análise, estruturação e classificação de diários oficiais, notícias, emendas e relatórios de atividades políticas de deputados do estado de Santa Catarina (SC).
 
-Analise o seguinte fragmento de texto (Parte ${i + 1} de ${chunks.length}, proveniente de um arquivo ${filename || "enviado pelo usuário"}) e extraia TODAS as ações parlamentares individuais/atividades encontradas especificamente neste trecho.
+Analise o seguinte fragmento de texto (proveniente do arquivo ${filename || "enviado pelo usuário"}) e extraia TODAS as ações parlamentares individuais/atividades encontradas especificamente neste trecho.
 
 REGRAS OBRIGATÓRIAS PARA ARQUIVOS CSV, PLANILHAS (XLS/XLSX) E TABELAS:
 - Cada linha de dados da planilha/CSV (que não seja a linha de cabeçalho) é um INPUT/REGISTRO NOVO E INDIVIDUAL.
@@ -946,29 +931,28 @@ REGRAS OBRIGATÓRIAS PARA ARQUIVOS CSV, PLANILHAS (XLS/XLSX) E TABELAS:
 
 Texto para análise:
 """
-${chunk}
+${text}
 """
 
 Extraia as ações e classifique cada uma de forma inteligente seguindo este esquema estrito.
-          `,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: schemaConfig
-          }
-        });
+        `,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: schemaConfig
+        }
+      });
 
-        const aiResponseText = response.text;
-        if (aiResponseText) {
-          try {
-            const parsedChunk = JSON.parse(aiResponseText);
-            if (Array.isArray(parsedChunk)) {
-              extractedRecords.push(...parsedChunk);
-              console.log(`[Gemini API] Chunk ${i + 1}/${chunks.length} processed successfully, found ${parsedChunk.length} actions.`);
-            }
-          } catch (parseError: any) {
-            console.error(`[Gemini API] Failed to parse JSON for chunk ${i + 1}:`, parseError);
-            throw new Error(`Failed to decode intelligence output for section ${i + 1}: ${parseError.message}`);
+      const aiResponseText = response.text;
+      if (aiResponseText) {
+        try {
+          const parsed = JSON.parse(aiResponseText);
+          if (Array.isArray(parsed)) {
+            extractedRecords.push(...parsed);
+            console.log(`[Gemini API] Single text payload processed successfully, found ${parsed.length} actions.`);
           }
+        } catch (parseError: any) {
+          console.error(`[Gemini API] Failed to parse JSON:`, parseError);
+          throw new Error(`Falha ao decodificar resultado da inteligência artificial: ${parseError.message}`);
         }
       }
     }
