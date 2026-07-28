@@ -211,8 +211,8 @@ function getGeminiClient(req?: express.Request): GoogleGenAI {
 async function generateContentWithRetry(
   ai: GoogleGenAI,
   params: any,
-  maxRetries = 3,
-  initialDelayMs = 2000
+  maxRetries = 5,
+  initialDelayMs = 3000
 ) {
   let attempt = 1;
   let delay = initialDelayMs;
@@ -221,18 +221,23 @@ async function generateContentWithRetry(
       return await ai.models.generateContent(params);
     } catch (err: any) {
       const errStr = String(err.message || err);
+      const isQuotaError =
+        errStr.includes("429") ||
+        errStr.includes("ResourceExhausted") ||
+        errStr.toLowerCase().includes("quota") ||
+        err.status === 429;
       const isTransient =
+        isQuotaError ||
         errStr.includes("503") ||
         errStr.includes("UNAVAILABLE") ||
         errStr.includes("high demand") ||
-        errStr.includes("429") ||
-        errStr.includes("ResourceExhausted") ||
-        err.status === 503 ||
-        err.status === 429;
+        err.status === 503;
 
       if (isTransient && attempt <= maxRetries) {
-        console.warn(`[Gemini API] Erro temporário detectado (Tentativa ${attempt}/${maxRetries}). Aguardando ${delay}ms para tentar novamente... Erro:`, errStr);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        // For quota rate limits (HTTP 429), use at least 15s wait time to allow the 1-minute window to reset
+        const actualDelay = isQuotaError ? Math.max(delay, 15000) : delay;
+        console.warn(`[Gemini API] Erro temporário ou limite de cota detectado (Tentativa ${attempt}/${maxRetries}). Aguardando ${actualDelay / 1000}s para tentar novamente... Erro:`, errStr);
+        await new Promise((resolve) => setTimeout(resolve, actualDelay));
         attempt++;
         delay *= 2; // Exponential backoff
       } else {

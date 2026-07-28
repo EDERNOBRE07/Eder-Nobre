@@ -971,10 +971,39 @@ export default function App() {
 
       const allExtractedRecords: any[] = [];
 
+      // Helper function to call classify endpoint with automatic retry on 429 rate limits
+      const fetchClassifyWithRetry = async (payload: any, maxRetries = 3) => {
+        let attempt = 1;
+        while (true) {
+          try {
+            const response = await fetch("/api/records/classify", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+                "X-Gemini-API-Key": customGeminiKey
+              },
+              body: JSON.stringify(payload)
+            });
+            return await parseSafeJsonResponse(response);
+          } catch (err: any) {
+            const errStr = String(err.message || err);
+            const isQuota = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.toLowerCase().includes("cota") || errStr.includes("RESOURCE_EXHAUSTED");
+            if (isQuota && attempt <= maxRetries) {
+              const waitSec = 15;
+              console.warn(`[Client Retry] Cota temporariamente excedida. Aguardando ${waitSec}s para tentar novamente (Tentativa ${attempt}/${maxRetries})...`);
+              await new Promise((resolve) => setTimeout(resolve, waitSec * 1000));
+              attempt++;
+            } else {
+              throw err;
+            }
+          }
+        }
+      };
+
       if (extractedText.trim()) {
-        // Split extractedText into chunks of up to 8,000 characters to ensure each HTTP call completes in ~3s,
-        // completely avoiding Hostinger/Nginx 504 Gateway Timeouts on large Excel spreadsheets!
-        const CLIENT_CHUNK_SIZE = 8000;
+        // Chunk extractedText into 16,000 char blocks (optimal for Gemini token window & fast HTTP response)
+        const CLIENT_CHUNK_SIZE = 16000;
         const textChunks: string[] = [];
         
         if (extractedText.length > CLIENT_CHUNK_SIZE) {
@@ -985,53 +1014,35 @@ export default function App() {
           textChunks.push(extractedText);
         }
 
-        console.log(`[Client Classification] Enviando "${item.name}" em ${textChunks.length} parte(s) para evitar timeouts do servidor.`);
+        console.log(`[Client Classification] Enviando "${item.name}" em ${textChunks.length} parte(s).`);
 
         for (let chunkIdx = 0; chunkIdx < textChunks.length; chunkIdx++) {
           const currentChunkText = textChunks[chunkIdx];
           
-          // Slight pause between client chunks if multiple to avoid hitting rate limits
+          // Pause 2.5s between chunks to stay well under the 15 RPM free tier limit
           if (chunkIdx > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 1500));
+            await new Promise((resolve) => setTimeout(resolve, 2500));
           }
 
-          const response = await fetch("/api/records/classify", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-              "X-Gemini-API-Key": customGeminiKey
-            },
-            body: JSON.stringify({ 
-              text: currentChunkText, 
-              filename: textChunks.length > 1 ? `${item.name} (Parte ${chunkIdx + 1}/${textChunks.length})` : item.name, 
-              fileBase64: undefined, 
-              mimeType: undefined 
-            })
+          const resData = await fetchClassifyWithRetry({ 
+            text: currentChunkText, 
+            filename: textChunks.length > 1 ? `${item.name} (Parte ${chunkIdx + 1}/${textChunks.length})` : item.name, 
+            fileBase64: undefined, 
+            mimeType: undefined 
           });
 
-          const resData = await parseSafeJsonResponse(response);
           if (resData.records && Array.isArray(resData.records)) {
             allExtractedRecords.push(...resData.records);
           }
         }
       } else if (fileBase64 && mimeType) {
-        const response = await fetch("/api/records/classify", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-            "X-Gemini-API-Key": customGeminiKey
-          },
-          body: JSON.stringify({ 
-            text: "", 
-            filename: item.name, 
-            fileBase64: fileBase64, 
-            mimeType: mimeType 
-          })
+        const resData = await fetchClassifyWithRetry({ 
+          text: "", 
+          filename: item.name, 
+          fileBase64: fileBase64, 
+          mimeType: mimeType 
         });
 
-        const resData = await parseSafeJsonResponse(response);
         if (resData.records && Array.isArray(resData.records)) {
           allExtractedRecords.push(...resData.records);
         }
