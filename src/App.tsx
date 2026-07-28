@@ -791,6 +791,34 @@ export default function App() {
     });
   };
 
+  const parseSafeJsonResponse = async (response: Response): Promise<any> => {
+    const text = await response.text();
+    let json: any = null;
+    try {
+      json = JSON.parse(text);
+    } catch (parseErr) {
+      console.error(`[API Parse Error] Resposta do servidor não-JSON (Status ${response.status} ${response.statusText}):`, text);
+      if (text.includes("<html") || text.includes("<!DOCTYPE") || text.includes("<head")) {
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+          throw new Error(`O servidor ou o serviço de IA do Gemini está temporariamente indisponível ou congestionado (Erro HTTP ${response.status} Gateway/Timeout). Por favor, clique no botão "Reprocessar Item" para tentar novamente.`);
+        } else if (response.status === 413) {
+          throw new Error("O arquivo ou texto enviado é muito grande para o servidor (Erro HTTP 413 Payload Too Large). Tente enviar um arquivo menor ou em partes.");
+        } else if (response.status === 500) {
+          throw new Error("O servidor encontrou um erro interno temporário (Erro HTTP 500). Tente reprocessar em alguns instantes.");
+        } else {
+          throw new Error(`O servidor retornou uma página de erro HTTP ${response.status} (${response.statusText || "Erro no Servidor"}). Clique em "Reprocessar Item" para tentar novamente.`);
+        }
+      }
+      throw new Error(`Resposta do servidor inválida (HTTP ${response.status}): ${text.slice(0, 150)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(json?.error || json?.message || `Erro no processamento do servidor (Status HTTP ${response.status})`);
+    }
+
+    return json;
+  };
+
   const runItemClassification = async (item: ImportSessionItem) => {
     // Set item status to pending
     setImportSessionItems((prev) =>
@@ -872,7 +900,12 @@ export default function App() {
           workbook.SheetNames.forEach((sheetName) => {
             const sheet = workbook.Sheets[sheetName];
             sheetsText += `--- Planilha: ${sheetName} ---\n`;
-            sheetsText += XLSX.utils.sheet_to_csv(sheet) + "\n";
+            const csvData = XLSX.utils.sheet_to_csv(sheet, { skipHidden: true });
+            // Filter out completely empty lines (only commas and spaces)
+            const cleanLines = csvData
+              .split("\n")
+              .filter((line) => line.replace(/,/g, "").trim().length > 0);
+            sheetsText += cleanLines.join("\n") + "\n";
           });
           extractedText = sheetsText;
         } else if (ext === "docx") {
@@ -937,12 +970,7 @@ export default function App() {
         })
       });
 
-      if (!response.ok) {
-        const errObj = await response.json();
-        throw new Error(errObj.error || "Erro de classificação no servidor");
-      }
-
-      const resData = await response.json();
+      const resData = await parseSafeJsonResponse(response);
       if (resData.records && Array.isArray(resData.records)) {
         // Tag records with the importItemId so we can remove or re-import cleanly
         const taggedNew = resData.records.map((r: any) => ({ ...r, importItemId: item.id }));
