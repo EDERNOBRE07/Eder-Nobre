@@ -56,6 +56,42 @@ import * as pdfjs from "pdfjs-dist";
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+// Safe JSON parser helper to handle HTML/Proxy/504 error pages gracefully
+const parseSafeJsonResponse = async (response: Response): Promise<any> => {
+  const text = await response.text();
+  let json: any = null;
+
+  // Detect if server or proxy (Hostinger/Nginx/Cloudflare/Apache) returned an HTML error response page
+  const trimmed = text.trim();
+  const isHtml = trimmed.startsWith("<") || trimmed.includes("<html") || trimmed.includes("<!DOCTYPE") || trimmed.includes("<head");
+
+  if (isHtml) {
+    console.error(`[API Parse Error] Resposta do servidor/proxy não-JSON (HTTP ${response.status}):`, text.slice(0, 300));
+    if (response.status === 502 || response.status === 504 || text.includes("502") || text.includes("504") || text.includes("Gateway")) {
+      throw new Error("O servidor de hospedagem excedeu o tempo limite de resposta (Erro HTTP 504/502 Gateway Timeout). O serviço demorou para responder. Clique em 'Reprocessar Item' para tentar novamente.");
+    } else if (response.status === 413 || text.includes("413") || text.includes("Payload Too Large")) {
+      throw new Error("O arquivo ou payload enviado é muito grande para o servidor (Erro HTTP 413 Payload Too Large).");
+    } else if (response.status === 500) {
+      throw new Error("O servidor encontrou um erro interno temporário (Erro HTTP 500). Tente reprocessar este item em alguns instantes.");
+    } else {
+      throw new Error(`O servidor de hospedagem retornou uma página HTML de erro (HTTP ${response.status} ${response.statusText || ""}). Clique em 'Reprocessar Item' para tentar novamente.`);
+    }
+  }
+
+  try {
+    json = JSON.parse(text);
+  } catch (parseErr) {
+    console.error(`[API Parse Error] Resposta do servidor não é um JSON válido (HTTP ${response.status}):`, text.slice(0, 300));
+    throw new Error(`Resposta inválida do servidor (HTTP ${response.status}). Por favor, clique no botão 'Reprocessar Item' para tentar novamente.`);
+  }
+
+  if (!response.ok) {
+    throw new Error(json?.error || json?.message || `Erro no servidor (Status HTTP ${response.status})`);
+  }
+
+  return json;
+};
+
 export default function App() {
   // Authentication State
   const [user, setUser] = useState<User | null>(null);
@@ -540,7 +576,7 @@ export default function App() {
       const dbSource = recRes.headers.get("X-Database-Source");
       setIsDbFallbackLocal(dbSource === "fallback-local");
 
-      const recData = await recRes.json();
+      const recData = await parseSafeJsonResponse(recRes);
       setRecords(recData);
 
       // Sincronização automática ao logar com o Google (usuários reais, não convidados anônimos)
@@ -566,7 +602,7 @@ export default function App() {
         throw new Error("HTTP 401 Unauthorized");
       }
       if (logRes.ok) {
-        const logData = await logRes.json();
+        const logData = await parseSafeJsonResponse(logRes);
         setLogs(logData);
       }
     } catch (err: any) {
@@ -589,7 +625,7 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
-        const data = await res.json();
+        const data = await parseSafeJsonResponse(res);
         setDbConnectionStatus(data);
       }
     } catch (err) {
@@ -611,7 +647,7 @@ export default function App() {
         }
       });
       if (res.ok) {
-        const data = await res.json();
+        const data = await parseSafeJsonResponse(res);
         setGeminiConnectionStatus(data);
       }
     } catch (err) {
@@ -658,36 +694,7 @@ export default function App() {
       console.log(`[Sync SQL] Resposta recebida do servidor backend em ${responseTimeMs}ms.`);
       console.log(`[Sync SQL] Status HTTP da resposta: ${response.status} (${response.statusText})`);
 
-      if (!response.ok) {
-        let errorMsg = "HTTP " + response.status;
-        let errObj: any = null;
-        try {
-          const responseClone = response.clone();
-          const responseText = await responseClone.text();
-          console.error("[Sync SQL] Corpo de resposta de erro (não-OK):", responseText);
-          errObj = JSON.parse(responseText);
-          errorMsg = errObj.error || errObj.message || errorMsg;
-        } catch (e) {
-          // Response is not JSON
-        }
-        
-        console.error(`[Sync SQL] Erro na requisição de sincronização. Código: ${response.status}, Detalhes: ${errorMsg}`);
-        const logData: LastSyncLog = {
-          timestamp: new Date().toLocaleString("pt-BR"),
-          status: response.status,
-          ok: false,
-          database: "mysql",
-          message: `Falha na sincronização (HTTP ${response.status}).`,
-          recordsCount: updatedRecordsList.length,
-          errorDetails: errorMsg
-        };
-        setLastSyncLog(logData);
-        localStorage.setItem("last_sync_log", JSON.stringify(logData));
-
-        throw new Error(errorMsg);
-      }
-
-      const resJson = await response.json();
+      const resJson = await parseSafeJsonResponse(response);
       console.log("[Sync SQL] === SUCESSO NA RESPOSTA JSON ===");
       console.log("[Sync SQL] Estrutura completa do objeto JSON recebido:", JSON.stringify(resJson, null, 2));
       console.log("[Sync SQL] Tipo de banco retornado pelo backend:", resJson.database);
@@ -965,9 +972,9 @@ export default function App() {
       const allExtractedRecords: any[] = [];
 
       if (extractedText.trim()) {
-        // Split extractedText into chunks of up to 12,000 characters to ensure each HTTP call takes < 10 seconds,
+        // Split extractedText into chunks of up to 8,000 characters to ensure each HTTP call completes in ~3s,
         // completely avoiding Hostinger/Nginx 504 Gateway Timeouts on large Excel spreadsheets!
-        const CLIENT_CHUNK_SIZE = 12000;
+        const CLIENT_CHUNK_SIZE = 8000;
         const textChunks: string[] = [];
         
         if (extractedText.length > CLIENT_CHUNK_SIZE) {
